@@ -4,12 +4,17 @@ declare(strict_types=1);
 
 namespace NyonCode\WireForms\Components;
 
+use Closure;
+
 /**
  * Color picker field supporting hex, hsl, rgb, rgba formats.
  */
 class ColorPicker extends Field
 {
     protected string $format = 'hex';
+
+    /** @var array<int, string>|Closure */
+    protected array|Closure $swatches = [];
 
     public function hex(): static
     {
@@ -46,9 +51,27 @@ class ColorPicker extends Field
         return $this;
     }
 
+    /**
+     * @param  array<int, string>|Closure  $colors  Hex colour strings shown as clickable swatches.
+     */
+    public function swatches(array|Closure $colors): static
+    {
+        $this->swatches = $colors;
+
+        return $this;
+    }
+
     public function getFormat(): string
     {
         return $this->format;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function getSwatches(): array
+    {
+        return $this->evaluate($this->swatches);
     }
 
     protected function viewName(): string
