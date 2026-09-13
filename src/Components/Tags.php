@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace NyonCode\WireForms\Components;
 
 use Closure;
+use NyonCode\WireCore\Foundation\Concerns\HasRelationship;
 use NyonCode\WireCore\Foundation\Concerns\HasSheetOnMobile;
 use NyonCode\WireForms\Concerns\HasItemLimits;
-use NyonCode\WireForms\Concerns\HasRelationship;
 
 /**
  * Free-form tag input with optional suggestions, limits, and relationship support.
@@ -66,6 +66,16 @@ class Tags extends Field
         $this->allowDuplicates = $condition;
 
         return $this;
+    }
+
+    /**
+     * A relationship-bound Tags field is keyed by a relation name, not a column;
+     * its rows are synced against that relation, so the key itself must never
+     * reach the record. A plain, column-backed Tags field keeps its array value.
+     */
+    public function isDehydrated(): bool
+    {
+        return $this->relationship === null && parent::isDehydrated();
     }
 
     // ─── Getters ───────────────────────────────────────────────────

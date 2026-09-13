@@ -9,6 +9,7 @@ use NyonCode\WireCore\Foundation\Concerns\HasSize;
 use NyonCode\WireForms\Concerns\CanBeSearchable;
 use NyonCode\WireForms\Concerns\HasChoiceVariants;
 use NyonCode\WireForms\Concerns\HasOptions;
+use NyonCode\WireForms\Support\FieldBounds;
 
 /**
  * Multiple checkbox list with search, bulk toggle, grouped options, and column layout.
@@ -34,6 +35,8 @@ class CheckboxList extends Field
 
     protected bool $bulkToggleable = false;
 
+    protected bool $showSelected = false;
+
     protected ?string $selectAllLabel = null;
 
     protected ?string $deselectAllLabel = null;
@@ -51,6 +54,10 @@ class CheckboxList extends Field
      */
     public function columns(int|array $columns): static
     {
+        if (is_int($columns)) {
+            FieldBounds::assertPositive(static::class, 'columns', $columns);
+        }
+
         $this->columns = $columns;
 
         return $this;
@@ -99,6 +106,31 @@ class CheckboxList extends Field
         $this->grouped = true;
 
         return $this;
+    }
+
+    /**
+     * Show what is chosen as chips above the list, each one removable.
+     *
+     * The half a checklist gives up to a multi-select. A long list only shows
+     * the options near the scroll position, and a searched one shows the
+     * matches — so in both cases the answer to "what have I actually picked" is
+     * somewhere off screen. The chips put it back at the top, and clicking one
+     * takes it off, which is the fastest way to undo a wrong tick without
+     * hunting for it in two hundred rows.
+     *
+     * Off by default: on a list of five options it is a second copy of the same
+     * five words.
+     */
+    public function showSelected(bool $condition = true): static
+    {
+        $this->showSelected = $condition;
+
+        return $this;
+    }
+
+    public function isShowingSelected(): bool
+    {
+        return $this->showSelected;
     }
 
     /**

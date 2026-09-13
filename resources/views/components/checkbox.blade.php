@@ -10,11 +10,11 @@
             type="checkbox"
             id="{{ $field->getId() }}"
             data-testid="form-checkbox-{{ $field->getStatePath() }}"
-            {{ $wireAttr }}="{{ $field->getWireModelAttribute() }}"
+            @if($field->submitsNatively()){!! $field->getNativeBindingHtml() !!}@else{{ $wireAttr }}="{{ $field->getWireModelAttribute() }}"@endif
             {!! $field->getExtraInputAttributesHtml() !!}
             @if($field->isDisabled()) disabled @endif
             @if($field->isRequired()) required @endif
-            class="mt-0.5 rounded border-gray-300 text-primary-600 shadow-sm focus:ring-primary-500 transition-colors duration-150 dark:bg-gray-800 dark:border-gray-600"
+            class="mt-0.5 rounded-sm border-gray-300 text-primary-600 shadow-sm focus:ring-primary-500 transition-colors duration-150 dark:bg-gray-800 dark:border-gray-600"
         />
         <div>
             @if($field->getLabel())

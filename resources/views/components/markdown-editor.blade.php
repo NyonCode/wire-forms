@@ -1,7 +1,8 @@
 @php
     use NyonCode\WireForms\Components\MarkdownEditor;
     assert($field instanceof MarkdownEditor);
-    $wireModifier = $field->getWireModelModifier();
+    // @entangle takes no wire:model modifiers — see CanBeLive::getEntangleModifier().
+    $entangleModifier = $field->getEntangleModifier();
     $fieldId = $field->getId();
 
     // Shared editor vocabulary (resources/lang/*/fields.php) — the same keys
@@ -11,72 +12,18 @@
         => (string) trans("wire-forms::fields.editor.{$key}", $replace);
 @endphp
 
+@include('wire-forms::partials.field-assets')
+
 @include('wire-forms::partials.field-wrapper-start')
 
 <div
-    x-data="{
-        content: @entangle($field->getWireModelAttribute()){{ $wireModifier ? '.' . $wireModifier : '' }},
-        tab: 'write',
+    {{-- Body registered as `wireMarkdownEditor`; only per-instance config here.
+         The markdown renderer moved into the bundle with it, which is what
+         retired the entity-encoding this attribute used to demand. --}}
+    x-data="wireMarkdownEditor({
+        state: @entangle($field->getWireModelAttribute()){{ $entangleModifier ? '.' . $entangleModifier : '' }},
         livePreview: @js($field->isLivePreview()),
-
-        renderMd(text) {
-            if (!text) return '';
-            // READ BEFORE EDITING. This whole expression is the value of an
-            // x-data attribute, so the HTML parser owns it before JavaScript
-            // ever sees it. Two consequences, both of which bit this view:
-            //
-            //  1. A RAW double quote ends the attribute, whatever JS thinks. A
-            //     literal backslash-quote truncated this function mid-regex and
-            //     Alpine threw an invalid-regexp error, killing the component —
-            //     no tab switch, no preview, no entangle. So every quote below
-            //     is written as an entity: not a delimiter, and decoded back to
-            //     a quote in time for the JS.
-            //  2. An entity is DECODED, so an escape sequence has to be written
-            //     twice over to survive as text. The sanitiser under this
-            //     comment is why that matters: written once, it decoded to
-            //     replace(ampersand with ampersand) — a no-op, and raw HTML
-            //     reached x-html unescaped.
-            let html = text
-                // Neutralise raw HTML first, including the double quote so a link
-                // URL can never break out of the href attribute (DOM-XSS).
-                .replace(/&/g, '&amp;amp;').replace(/</g, '&amp;lt;').replace(/>/g, '&amp;gt;').replace(/&quot;/g, '&amp;quot;')
-                .replace(/^### (.+)$/gm, '<h3 class=&quot;text-base font-semibold mt-3 mb-1&quot;>$1</h3>')
-                .replace(/^## (.+)$/gm, '<h2 class=&quot;text-lg font-bold mt-4 mb-1&quot;>$1</h2>')
-                .replace(/^# (.+)$/gm, '<h1 class=&quot;text-xl font-bold mt-4 mb-2&quot;>$1</h1>')
-                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                .replace(/\*(.+?)\*/g, '<em>$1</em>')
-                .replace(/~~(.+?)~~/g, '<del>$1</del>')
-                .replace(/`([^`\n]+)`/g, '<code class=&quot;bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded text-xs font-mono&quot;>$1</code>')
-                .replace(/\[(.+?)\]\((.+?)\)/g, (m, label, url) => {
-                    // Only allow safe URL schemes — block javascript:/data: etc.
-                    const safe = /^(https?:|mailto:|#|\/)/i.test(url.trim()) ? url : '#';
-                    return '<a href=&quot;' + safe + '&quot; class=&quot;text-primary-600 hover:underline&quot; target=&quot;_blank&quot; rel=&quot;noopener noreferrer&quot;>' + label + '</a>';
-                })
-                .replace(/^> (.+)$/gm, '<blockquote class=&quot;border-l-4 border-gray-300 dark:border-gray-600 pl-3 text-gray-600 dark:text-gray-400 italic&quot;>$1</blockquote>')
-                .replace(/^- (.+)$/gm, '<li class=&quot;ml-4 list-disc&quot;>$1</li>')
-                .replace(/^\d+\. (.+)$/gm, '<li class=&quot;ml-4 list-decimal&quot;>$1</li>')
-                .replace(/\n\n/g, '</p><p class=&quot;mb-2&quot;>');
-            return '<p class=&quot;mb-2&quot;>' + html + '</p>';
-        },
-
-        insertAround(before, after) {
-            const el = this.$refs.editor;
-            const start = el.selectionStart, end = el.selectionEnd;
-            const selected = this.content.substring(start, end) || 'text';
-            this.content = this.content.substring(0, start) + before + selected + after + this.content.substring(end);
-            this.$nextTick(() => {
-                el.focus();
-                el.setSelectionRange(start + before.length, start + before.length + selected.length);
-            });
-        },
-
-        insertLine(prefix) {
-            const el = this.$refs.editor;
-            const lineStart = this.content.lastIndexOf('\n', el.selectionStart - 1) + 1;
-            this.content = this.content.substring(0, lineStart) + prefix + this.content.substring(lineStart);
-            this.$nextTick(() => el.focus());
-        }
-    }"
+    })"
     @class([
         'rounded-md border overflow-hidden',
         'border-gray-300 dark:border-gray-600',
@@ -88,23 +35,23 @@
     <div class="flex items-center gap-0.5 px-2 py-1.5 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-600">
         @unless($field->isDisabled() || $field->isReadOnly())
             <button type="button" @click="insertAround('**', '**')" data-testid="form-editor-{{ $field->getStatePath() }}-bold" title="{{ $t('bold') }}"
-                class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-bold text-sm w-7 h-7 flex items-center justify-center">B</button>
+                class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-bold text-sm w-7 h-7 flex items-center justify-center">B</button>
             <button type="button" @click="insertAround('*', '*')" data-testid="form-editor-{{ $field->getStatePath() }}-italic" title="{{ $t('italic') }}"
-                class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors italic text-sm w-7 h-7 flex items-center justify-center">I</button>
+                class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors italic text-sm w-7 h-7 flex items-center justify-center">I</button>
             <button type="button" @click="insertAround('~~', '~~')" title="{{ $t('strike') }}"
-                class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors line-through text-sm w-7 h-7 flex items-center justify-center">S</button>
+                class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors line-through text-sm w-7 h-7 flex items-center justify-center">S</button>
             <button type="button" @click="insertAround('\`', '\`')" title="{{ $t('code') }}"
-                class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-mono text-sm w-7 h-7 flex items-center justify-center">&lt;/&gt;</button>
+                class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-mono text-sm w-7 h-7 flex items-center justify-center">&lt;/&gt;</button>
             <div class="w-px h-5 bg-gray-300 dark:bg-gray-500 mx-1"></div>
             <button type="button" @click="insertLine('## ')" data-testid="form-editor-{{ $field->getStatePath() }}-heading" title="{{ $t('heading', ['level' => 2]) }}"
-                class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors text-xs font-bold w-7 h-7 flex items-center justify-center">H</button>
+                class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors text-xs font-bold w-7 h-7 flex items-center justify-center">H</button>
             <button type="button" @click="insertLine('- ')" title="{{ $t('bullet_list') }}"
-                class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors text-sm w-7 h-7 flex items-center justify-center">
+                class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors text-sm w-7 h-7 flex items-center justify-center">
                 {!! icon('list-bullet', 'w-4 h-4', 'w-4 h-4') !!}
             </button>
             <button type="button" @click="insertLine('> ')" title="{{ $t('blockquote') }}"
-                class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors text-sm w-7 h-7 flex items-center justify-center">
-                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M4.583 17.321C3.553 16.227 3 15 3 13.011c0-3.5 2.457-6.637 6.03-8.188l.893 1.378c-3.335 1.804-3.987 4.145-4.247 5.621.537-.278 1.24-.375 1.929-.311 1.804.167 3.226 1.648 3.226 3.489a3.5 3.5 0 01-3.5 3.5 3.871 3.871 0 01-2.748-1.179zm10 0C13.553 16.227 13 15 13 13.011c0-3.5 2.457-6.637 6.03-8.188l.893 1.378c-3.335 1.804-3.987 4.145-4.247 5.621.537-.278 1.24-.375 1.929-.311 1.804.167 3.226 1.648 3.226 3.489a3.5 3.5 0 01-3.5 3.5 3.871 3.871 0 01-2.748-1.179z"/></svg>
+                class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors text-sm w-7 h-7 flex items-center justify-center">
+                {!! icon('forms:blockquote', 'w-4 h-4') !!}
             </button>
         @endunless
 

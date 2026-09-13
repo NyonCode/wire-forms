@@ -11,13 +11,17 @@ use Illuminate\Database\Eloquent\Relations\HasOneOrMany;
 use NyonCode\WireCore\Core\Hydration\CastResolver;
 use NyonCode\WireCore\Core\Hydration\Dehydrator;
 use NyonCode\WireCore\Core\Hydration\ValueTransformer;
+use NyonCode\WireCore\Core\Plugin\HookDispatch;
 use NyonCode\WireCore\Core\Plugin\Hooks\FormSavedPayload;
 use NyonCode\WireCore\Core\Plugin\Hooks\FormSavingPayload;
-use NyonCode\WireCore\Core\Plugin\PluginManager;
+use NyonCode\WireCore\Core\Plugin\HookTarget;
 use NyonCode\WireCore\Foundation\Components\LayoutComponent;
+use NyonCode\WireCore\Foundation\Contracts\CanBeDehydrated;
+use NyonCode\WireCore\Foundation\Enums\Hook;
+use NyonCode\WireForms\Components\Field;
 use NyonCode\WireForms\Components\MorphToSelect;
 use NyonCode\WireForms\Components\Repeater;
-use NyonCode\WireForms\Components\Tags;
+use NyonCode\WireForms\Contracts\SavesAfterRecord;
 use NyonCode\WireForms\Exceptions\FormConfigurationException;
 use NyonCode\WireForms\Forms\Config\FormConfig;
 
@@ -28,10 +32,14 @@ use NyonCode\WireForms\Forms\Config\FormConfig;
  */
 final class SaveHandler
 {
+    private readonly StateDehydrator $dehydrator;
+
     public function __construct(
         private readonly FormConfig $config,
         private readonly FormRuntime $runtime,
-    ) {}
+    ) {
+        $this->dehydrator = new StateDehydrator;
+    }
 
     public function save(): mixed
     {
@@ -57,26 +65,29 @@ final class SaveHandler
         // FileUpload moves validated temporary uploads to permanent storage (so
         // an abandoned form leaves no orphan) and how a date field applies its
         // storage format and timezone.
-        $data = StateDehydrator::dehydrate(
-            $this->config->schema,
-            $data,
-            $this->config->model instanceof Model ? $this->config->model : null,
-        );
+        $data = $this->dehydrateFields($data);
 
         // 3. Plugin hook: form.saving (can modify data)
-        if (app()->bound(PluginManager::class)) {
-            $manager = app(PluginManager::class);
+        //
+        // One of the seven legacy names, so both dispatchers run — see
+        // `PluginManager::callbackExpectsArray()`. The guard is HookDispatch's,
+        // which is also where the `hasHook()` short-circuit comes from: this used
+        // to build both payloads whenever a manager was bound at all.
+        $manager = HookDispatch::manager(Hook::FormSaving);
+
+        if ($manager !== null) {
+            $target = $this->hookTarget();
 
             $payload = $manager->runHook('form.saving', [
                 'config' => $this->config,
                 'data' => $data,
-            ]);
+            ], $target);
             $hookData = $payload['data'] ?? $data;
             $data = is_array($hookData) ? $hookData : $data;
 
             $typedPayload = $manager->runTypedHook(
                 'form.saving',
-                new FormSavingPayload($this->config, $data),
+                new FormSavingPayload($this->config, $data, $target),
             );
             $data = $typedPayload->data;
         }
@@ -102,23 +113,35 @@ final class SaveHandler
             $relationHandler->save($record, $this->config->schema, $data);
         }
 
+        // 6b. Fields that persist themselves against the saved record.
+        //
+        // After the record, never before: a new one has no key until it is
+        // written, and a pivot row needs that key. Given the raw state rather
+        // than the validated data, because these fields carry no rule of their
+        // own and validate() drops what it was not asked about.
+        foreach ($this->afterRecordFields() as $field) {
+            $field->saveAfterRecord($record, $this->runtime->getStateManager()->getState()[$field->getName()] ?? null);
+        }
+
         // 7. afterSave hook (void)
         if ($this->config->afterSave) {
             ($this->config->afterSave)($record);
         }
 
         // 8. Plugin hook: form.saved (observation)
-        if (app()->bound(PluginManager::class)) {
-            $manager = app(PluginManager::class);
+        $manager = HookDispatch::manager(Hook::FormSaved);
+
+        if ($manager !== null) {
+            $target = $this->hookTarget();
 
             $manager->runHook('form.saved', [
                 'config' => $this->config,
                 'record' => $record,
-            ]);
+            ], $target);
 
             $manager->runTypedHook(
                 'form.saved',
-                new FormSavedPayload($this->config, $record),
+                new FormSavedPayload($this->config, $record, $target),
             );
         }
 
@@ -144,23 +167,24 @@ final class SaveHandler
             throw FormConfigurationException::noModel();
         }
 
-        // Relationship-backed repeaters hold has-many rows, not parent columns;
-        // they are persisted separately by RelationshipSaveHandler after the parent
-        // save. A relationship-bound Tags field is likewise not a parent column
-        // (its key names a relation, not an attribute). Left in place either would
-        // dehydrate a non-existent column and fatal.
-        foreach ([...$this->relationshipRepeaterNames(), ...$this->tagsRelationshipNames()] as $name) {
+        // Whatever the schema says is not a column on this record: a relationship
+        // repeater's has-many rows (written by RelationshipSaveHandler after the
+        // parent), a relationship-bound Tags field, a morph select, a password
+        // confirmation, anything an owner switched off with dehydrated(false).
+        // Left in place, each would dehydrate a column that does not exist and
+        // fatal. Only the payload is stripped — $data keeps every key for the
+        // relationship pass and the after-record fields further down.
+        foreach ($this->nonDehydratedNames() as $name) {
             unset($data[$name]);
         }
 
-        // A MorphToSelect's own name is a morph relation, never a column — writing
-        // it fatals. Replace it with the two real columns it manages
-        // (`{name}_type` / `{name}_id`), read from raw state: those sub-fields carry
-        // no validation rule of their own, so validate() dropped them from $data.
+        // A MorphToSelect is dropped by the sweep above with everything else that
+        // is not a column; what is particular to it is the replacement. The two
+        // real columns it manages (`{name}_type` / `{name}_id`) are read from raw
+        // state: those sub-fields carry no validation rule of their own, so
+        // validate() dropped them from $data.
         $rawState = $this->runtime->getStateManager()->getState();
         foreach ($this->morphToSelectFields() as $field) {
-            unset($data[$field->getName()]);
-
             foreach ([$field->getTypeColumn(), $field->getIdColumn()] as $column) {
                 if (array_key_exists($column, $rawState)) {
                     $data[$column] = $rawState[$column];
@@ -189,26 +213,46 @@ final class SaveHandler
     }
 
     /**
-     * Collect the field names of all relationship-backed repeaters in the schema,
-     * traversing nested layout components.
+     * Apply every field's own dehydration to the data about to be persisted.
      *
-     * @return array<int, string>
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
      */
-    private function relationshipRepeaterNames(): array
+    private function dehydrateFields(array $data): array
     {
-        return $this->collectRelationshipRepeaterNames($this->config->schema);
+        return $this->dehydrator->dehydrate(
+            $data,
+            $this->config->schema,
+            $this->config->model instanceof Model ? $this->config->model : null,
+        );
     }
 
     /**
-     * @param  array<int, mixed>  $schema
+     * Names of schema components whose state must not be written to the record.
+     *
+     * Asked of the schema rather than enumerated here: a component says whether
+     * it is a column, and the ones that are not say so for their own reasons —
+     * a relation name, a morph pair, an owner's `dehydrated(false)`.
+     * Both hosts of the payload — a field and a repeater — answer the
+     * {@see CanBeDehydrated} contract, so the question is asked without a type
+     * check.
+     * {@see SavesAfterRecord} is the one implication left in this layer: a field
+     * that writes itself against the saved record is by definition not a column
+     * on it, so the contract answers for it and no field has to declare both.
+     *
      * @return array<int, string>
      */
-    private function collectRelationshipRepeaterNames(array $schema): array
+    private function nonDehydratedNames(): array
     {
-        return array_map(
-            static fn (Repeater $repeater): string => $repeater->getName(),
-            $this->collectRelationshipRepeaterFields($schema),
-        );
+        $names = [];
+
+        foreach ($this->dehydrator->payloadComponents($this->config->schema) as $component) {
+            if ($component instanceof SavesAfterRecord || ! $component->isDehydrated()) {
+                $names[] = $component->getName();
+            }
+        }
+
+        return $names;
     }
 
     /**
@@ -278,38 +322,6 @@ final class SaveHandler
     }
 
     /**
-     * Names of relationship-bound Tags fields anywhere in the schema. Their key
-     * names a relation (not a column), so it must be stripped before dehydration
-     * to avoid a "no such column" fatal. A plain (column-backed) Tags field keeps
-     * its array value.
-     *
-     * @return array<int, string>
-     */
-    private function tagsRelationshipNames(): array
-    {
-        return $this->collectTagsRelationshipNames($this->config->schema);
-    }
-
-    /**
-     * @param  array<int, mixed>  $schema
-     * @return array<int, string>
-     */
-    private function collectTagsRelationshipNames(array $schema): array
-    {
-        $names = [];
-
-        foreach ($schema as $component) {
-            if ($component instanceof Tags && $component->getRelationship() !== null) {
-                $names[] = $component->getName();
-            } elseif ($component instanceof LayoutComponent) {
-                $names = array_merge($names, $this->collectTagsRelationshipNames($component->getSchema()));
-            }
-        }
-
-        return $names;
-    }
-
-    /**
      * MorphToSelect fields anywhere in the schema. Their own key is a morph
      * relation, not a column, and their `{name}_type` / `{name}_id` sub-fields
      * carry no validation rule — so the save payload needs both rewriting.
@@ -319,6 +331,38 @@ final class SaveHandler
     private function morphToSelectFields(): array
     {
         return $this->collectMorphToSelectFields($this->config->schema);
+    }
+
+    /**
+     * Every field in the schema that saves itself after the record.
+     *
+     * @return array<int, Field&SavesAfterRecord>
+     */
+    private function afterRecordFields(): array
+    {
+        return $this->collectAfterRecordFields($this->config->schema);
+    }
+
+    /**
+     * @param  array<int, mixed>  $schema
+     * @return array<int, Field&SavesAfterRecord>
+     */
+    private function collectAfterRecordFields(array $schema): array
+    {
+        $fields = [];
+
+        foreach ($schema as $component) {
+            // Both, because the name comes from the field and the behaviour
+            // from the contract: something that implements one without the other
+            // is not a form field and has no name to remove from the data.
+            if ($component instanceof Field && $component instanceof SavesAfterRecord) {
+                $fields[] = $component;
+            } elseif ($component instanceof LayoutComponent) {
+                $fields = array_merge($fields, $this->collectAfterRecordFields($component->getSchema()));
+            }
+        }
+
+        return $fields;
     }
 
     /**
@@ -429,5 +473,22 @@ final class SaveHandler
         }
 
         return $message;
+    }
+
+    /**
+     * Where a save hook's callbacks are being run.
+     *
+     * The host is asked of the runtime rather than held here: a form may be
+     * saved from a Livewire component, from a modal action or from nothing at
+     * all, and only the state manager knows which. A form with no host is still
+     * addressable by its model.
+     */
+    private function hookTarget(): HookTarget
+    {
+        return HookTarget::for(
+            'form',
+            $this->runtime->getStateManager()->getLivewire(),
+            $this->config->model,
+        );
     }
 }

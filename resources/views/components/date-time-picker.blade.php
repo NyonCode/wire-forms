@@ -38,6 +38,8 @@
     $typeable = $field->acceptsTypedInput();
 @endphp
 
+@include('wire-forms::partials.field-assets')
+
 @include('wire-forms::partials.field-wrapper-start')
 
 @unless($field->isNative())
@@ -51,11 +53,15 @@
 @if($field->isNative())
     @include('wire-forms::partials.date-time-native-input')
 @else
+    {{-- The calendar/clock controller is registered once as `wireDateTimePicker`
+         (packages/forms/resources/js/fields/date-time-picker.js); only the
+         per-instance config is markup. `state` is built here rather than passed
+         through config because `$wire.entangle` is an Alpine magic and magics are
+         in scope only inside an x-data expression. --}}
     <div
-            x-data="{
-            open: false,
+            x-data="wireDateTimePicker({
             {{-- Honor live(): mirror the other entangle-based fields. --}}
-            value: $wire.entangle('{{ $field->getWireModelAttribute() }}'){{ $wireModifier ? '.' . $wireModifier : '' }},
+            state: $wire.entangle('{{ $field->getWireModelAttribute() }}'){{ $wireModifier ? '.' . $wireModifier : '' }},
             hasDate: @js($hasDate),
             hasTime: @js($hasTime),
             hasSeconds: @js($hasSeconds),
@@ -71,328 +77,11 @@
             displayFormat: @js($field->getDisplayFormat()),
             closeOnDateSelection: @js($field->shouldCloseOnDateSelection()),
 
-            currentMonth: null,
-            currentYear: null,
-            hours: 0,
-            minutes: 0,
-            seconds: 0,
-
-            dayNames: [],
-            days: [],
-            _float: null,
-
-            init() {
-                // Teleport + Floating UI: pin the calendar panel to the input while
-                // open so table/modal overflow can never clip it.
-                this.$watch('open', (open) => {
-                    if (open) {
-                        this.$nextTick(() => {
-                            this._float = this.$float(this.$refs.trigger, this.$refs.panel, { placement: 'bottom-start', offset: 4{{ $sheetOnMobile ? ', sheetOnMobile: true, sheetBreakpoint: '.$sheetBpPx : '' }} });
-                        });
-                    } else if (this._float) {
-                        this._float();
-                        this._float = null;
-                    }
-                });
-
-                if (this.value) {
-                    const parsed = this.parseValue(this.value);
-                    this.currentMonth = parsed.getMonth();
-                    this.currentYear = parsed.getFullYear();
-                    this.hours = parsed.getHours();
-                    this.minutes = parsed.getMinutes();
-                    this.seconds = parsed.getSeconds();
-                } else {
-                    // Open on today, or on the nearest month the bounds allow —
-                    // landing on a month where every day is greyed out reads as
-                    // a broken calendar.
-                    const today = new Date();
-                    let anchor = this.formatDateStr(today.getFullYear(), today.getMonth() + 1, today.getDate());
-                    if (this.minDay && anchor < this.minDay) anchor = this.minDay;
-                    if (this.maxDay && anchor > this.maxDay) anchor = this.maxDay;
-                    const [y, m] = anchor.split('-');
-                    this.currentYear = parseInt(y, 10);
-                    this.currentMonth = parseInt(m, 10) - 1;
-                }
-                this.buildDayNames();
-                this.buildCalendar();
-            },
-
-            parseValue(val) {
-                if (!val) return new Date();
-                // Handle YYYY-MM-DD, YYYY-MM-DDTHH:mm, HH:mm formats
-                if (/^\d{2}:\d{2}/.test(val)) {
-                    const parts = val.split(':');
-                    const d = new Date();
-                    d.setHours(parseInt(parts[0]), parseInt(parts[1]), parts[2] ? parseInt(parts[2]) : 0);
-                    return d;
-                }
-                return new Date(val.replace(' ', 'T'));
-            },
-
-            buildDayNames() {
-                const names = [];
-                const base = new Date(2024, 0, 1); // Monday = 2024-01-01
-                const offset = this.firstDayOfWeek === 0 ? 6 : this.firstDayOfWeek - 1;
-                for (let i = 0; i < 7; i++) {
-                    const d = new Date(base);
-                    d.setDate(d.getDate() + i - offset);
-                    names.push(d.toLocaleDateString(undefined, { weekday: 'short' }).slice(0, 2));
-                }
-                this.dayNames = names;
-            },
-
-            buildCalendar() {
-                const first = new Date(this.currentYear, this.currentMonth, 1);
-                let startDay = first.getDay() - this.firstDayOfWeek;
-                if (startDay < 0) startDay += 7;
-
-                const daysInMonth = new Date(this.currentYear, this.currentMonth + 1, 0).getDate();
-                const daysInPrevMonth = new Date(this.currentYear, this.currentMonth, 0).getDate();
-
-                const cells = [];
-
-                // Previous month padding
-                for (let i = startDay - 1; i >= 0; i--) {
-                    cells.push({ day: daysInPrevMonth - i, current: false, date: null });
-                }
-
-                // Current month
-                for (let d = 1; d <= daysInMonth; d++) {
-                    const dateStr = this.formatDateStr(this.currentYear, this.currentMonth + 1, d);
-                    cells.push({ day: d, current: true, date: dateStr });
-                }
-
-                // Next month padding
-                const remaining = 42 - cells.length;
-                for (let d = 1; d <= remaining; d++) {
-                    cells.push({ day: d, current: false, date: null });
-                }
-
-                this.days = cells;
-            },
-
-            formatDateStr(y, m, d) {
-                return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
-            },
-
-            {{-- Nothing selectable lies before the bounds, so the arrows stop there. --}}
-            get canGoPrev() {
-                if (!this.minDay) return true;
-                const last = new Date(this.currentYear, this.currentMonth, 0);
-                return this.formatDateStr(last.getFullYear(), last.getMonth() + 1, last.getDate()) >= this.minDay;
-            },
-
-            get canGoNext() {
-                if (!this.maxDay) return true;
-                const first = new Date(this.currentYear, this.currentMonth + 1, 1);
-                return this.formatDateStr(first.getFullYear(), first.getMonth() + 1, first.getDate()) <= this.maxDay;
-            },
-
-            prevMonth() {
-                if (!this.canGoPrev) return;
-                if (this.currentMonth === 0) {
-                    this.currentMonth = 11;
-                    this.currentYear--;
-                } else {
-                    this.currentMonth--;
-                }
-                this.buildCalendar();
-            },
-
-            nextMonth() {
-                if (!this.canGoNext) return;
-                if (this.currentMonth === 11) {
-                    this.currentMonth = 0;
-                    this.currentYear++;
-                } else {
-                    this.currentMonth++;
-                }
-                this.buildCalendar();
-            },
-
-            isDisabled(dateStr) {
-                if (!dateStr) return true;
-                if (this.disabledDates.includes(dateStr)) return true;
-                if (this.minDay && dateStr < this.minDay) return true;
-                if (this.maxDay && dateStr > this.maxDay) return true;
-                return false;
-            },
-
-            isSelected(dateStr) {
-                if (!this.value || !dateStr) return false;
-                return this.value.startsWith(dateStr);
-            },
-
-            isToday(dateStr) {
-                if (!dateStr) return false;
-                const today = new Date();
-                return dateStr === this.formatDateStr(today.getFullYear(), today.getMonth() + 1, today.getDate());
-            },
-
-            selectDate(dateStr) {
-                if (this.isDisabled(dateStr)) return;
-                this.commitValue(dateStr);
-                // A date-only picker has nothing left to ask, so it always closes.
-                // With a time part the panel stays open to pick it — unless the
-                // owner opted out via closeOnDateSelection().
-                if (!this.hasTime || this.closeOnDateSelection) {
-                    this.open = false;
-                }
-            },
-
-            {{-- The value's own time, in the shape the state is written in. --}}
-            timeValue() {
-                return String(this.hours).padStart(2, '0') + ':' + String(this.minutes).padStart(2, '0')
-                    + (this.hasSeconds ? ':' + String(this.seconds).padStart(2, '0') : '');
-            },
-
-            {{-- Pull the clock back inside the bounds before it reaches the value.
-                 A bound's time only binds on its own day — 08:30 as a minimum
-                 says nothing about the days after it — so a datetime picker
-                 checks the day first, while a time-only one is always on its
-                 own day. --}}
-            clampTime(day) {
-                if (!this.hasTime) return;
-
-                const lower = (!this.hasDate || (this.minDay && day === this.minDay)) ? this.minTime : null;
-                const upper = (!this.hasDate || (this.maxDay && day === this.maxDay)) ? this.maxTime : null;
-                const current = String(this.hours).padStart(2, '0') + ':' + String(this.minutes).padStart(2, '0') + ':' + String(this.seconds).padStart(2, '0');
-
-                let target = null;
-                if (lower && current < lower) target = lower;
-                else if (upper && current > upper) target = upper;
-                if (!target) return;
-
-                const [h, m, s] = target.split(':');
-                this.hours = parseInt(h, 10);
-                this.minutes = parseInt(m, 10);
-                this.seconds = this.hasSeconds ? parseInt(s, 10) : 0;
-            },
-
-            commitValue(dateStr = null) {
-                if (this.hasDate && this.hasTime) {
-                    const d = dateStr || (this.value ? this.value.split(/[T ]/)[0] : this.formatDateStr(this.currentYear, this.currentMonth + 1, 1));
-                    this.clampTime(d);
-                    this.value = d + ' ' + this.timeValue();
-                } else if (this.hasDate) {
-                    this.value = dateStr;
-                } else {
-                    this.clampTime(null);
-                    this.value = this.timeValue();
-                }
-            },
-
-            adjustHours(dir) {
-                this.hours = ((this.hours + dir * this.hoursStep) % 24 + 24) % 24;
-                this.commitValue();
-            },
-            adjustMinutes(dir) {
-                this.minutes = ((this.minutes + dir * this.minutesStep) % 60 + 60) % 60;
-                this.commitValue();
-            },
-            adjustSeconds(dir) {
-                this.seconds = ((this.seconds + dir * this.secondsStep) % 60 + 60) % 60;
-                this.commitValue();
-            },
-
-            get displayValue() {
-                if (!this.value) return '';
-                if (!this.displayFormat) return this.value;
-
-                // State is always a widget-parseable string (Y-m-d, Y-m-d\TH:i,
-                // H:i, Y-m). Read it without Date(), which would drag the
-                // browser's timezone into a value that carries none.
-                const [datePart = '', timePart = ''] = String(this.value).split(/[T ]/);
-                const [y, mo, d] = datePart.split('-');
-                const [h, mi, sec] = timePart.split(':');
-
-                const pad = (v) => String(v ?? '').padStart(2, '0');
-                const num = (v) => String(parseInt(v ?? '0', 10) || 0);
-
-                // PHP date() tokens the picker can honour; anything else is
-                // passed through, and \\x escapes a literal.
-                const tokens = {
-                    d: pad(d), j: num(d),
-                    m: pad(mo), n: num(mo),
-                    Y: y ?? '', y: (y ?? '').slice(-2),
-                    H: pad(h), G: num(h),
-                    i: pad(mi), s: pad(sec),
-                };
-
-                let out = '';
-                for (let i = 0; i < this.displayFormat.length; i++) {
-                    const c = this.displayFormat[i];
-                    if (c === '\\') { out += this.displayFormat[++i] ?? ''; continue; }
-                    out += (c in tokens) ? tokens[c] : c;
-                }
-
-                return out;
-            },
-
-@if($typeable)
-            @include('wire-forms::partials.date-time-typing')
-
-            {{-- What a parsed set of numbers means to a calendar-and-clock picker.
-                 Everything is checked before anything is written, so a refused
-                 entry leaves the picker exactly as the user found it. --}}
-            applyTyped(parts) {
-                let hours = this.hours, minutes = this.minutes, seconds = this.seconds;
-
-                if (this.hasTime) {
-                    {{-- A format with no clock in it, or a date typed without
-                         one, keeps the time already showing. --}}
-                    hours = parts.hours ?? hours;
-                    minutes = parts.minutes ?? minutes;
-                    seconds = this.hasSeconds ? (parts.seconds ?? seconds) : 0;
-                    if (hours > 23 || minutes > 59 || seconds > 59) return false;
-                }
-
-                let dateStr = null;
-
-                if (this.hasDate) {
-                    const { year, month, day } = parts;
-                    if (! year || ! month || ! day || month > 12 || day < 1) return false;
-                    {{-- 31 February is a typo, and new Date() would quietly roll
-                         it forward into March rather than say so. --}}
-                    if (day > new Date(year, month, 0).getDate()) return false;
-
-                    dateStr = this.formatDateStr(year, month, day);
-                    {{-- The same gate the calendar cells go through: a day the
-                         bounds or disabledDates exclude cannot be typed in
-                         either. --}}
-                    if (this.isDisabled(dateStr)) return false;
-                }
-
-                this.hours = hours;
-                this.minutes = minutes;
-                this.seconds = seconds;
-
-                if (dateStr) {
-                    {{-- Walk the calendar to what was typed, so opening the panel
-                         after typing shows the month the value is in. --}}
-                    this.currentYear = parts.year;
-                    this.currentMonth = parts.month - 1;
-                    this.buildCalendar();
-                }
-
-                {{-- commitValue() clamps the clock into the bounds of the day it
-                     lands on, exactly as it does for a picked date. --}}
-                this.commitValue(dateStr);
-
-                return true;
-            },
-@endif
-
-            get monthYearLabel() {
-                const d = new Date(this.currentYear, this.currentMonth);
-                return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-            },
-
-            clear() {
-                this.value = null;
-            }
-        }"
+            typedFormat: @js($field->getTypedFormat()),
+            typeable: @js($typeable),
+            sheetOnMobile: @js($sheetOnMobile),
+            sheetBreakpoint: @js($sheetBpPx),
+        })"
             class="relative"
     >
         {{-- Input trigger --}}
@@ -452,16 +141,7 @@
                     @if($field->isDisabled() || $field->isReadOnly()) disabled @endif
                     class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 disabled:pointer-events-none transition-colors duration-150"
             >
-                <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                     stroke-width="1.5" stroke="currentColor">
-                    @if($hasDate)
-                        <path stroke-linecap="round" stroke-linejoin="round"
-                              d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5"/>
-                    @else
-                        <path stroke-linecap="round" stroke-linejoin="round"
-                              d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                    @endif
-                </svg>
+                {!! icon($hasDate ? 'outline:calendar' : 'outline:clock', 'h-4 w-4') !!}
             </button>
         </div>
 
@@ -517,14 +197,14 @@
                     <button type="button" @click="prevMonth()" :disabled="!canGoPrev"
                             :class="canGoPrev ? 'hover:bg-gray-100 dark:hover:bg-gray-700' : 'opacity-40 cursor-not-allowed'"
                             data-testid="form-datetime-{{ $field->getStatePath() }}-prev-month" aria-label="Previous month"
-                            class="p-1 rounded text-gray-600 dark:text-gray-300 transition-colors duration-150">
+                            class="p-1 rounded-sm text-gray-600 dark:text-gray-300 transition-colors duration-150">
                         {!! icon('chevron-left', 'w-4 h-4', 'h-4 w-4') !!}
                     </button>
                     <span class="text-sm font-semibold text-gray-900 dark:text-white" x-text="monthYearLabel"></span>
                     <button type="button" @click="nextMonth()" :disabled="!canGoNext"
                             :class="canGoNext ? 'hover:bg-gray-100 dark:hover:bg-gray-700' : 'opacity-40 cursor-not-allowed'"
                             data-testid="form-datetime-{{ $field->getStatePath() }}-next-month" aria-label="Next month"
-                            class="p-1 rounded text-gray-600 dark:text-gray-300 transition-colors duration-150">
+                            class="p-1 rounded-sm text-gray-600 dark:text-gray-300 transition-colors duration-150">
                         {!! icon('chevron-right', 'w-4 h-4', 'h-4 w-4') !!}
                     </button>
                 </div>

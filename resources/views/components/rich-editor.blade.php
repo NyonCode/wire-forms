@@ -13,64 +13,17 @@
         => (string) trans("wire-forms::fields.editor.{$key}", $replace);
 @endphp
 
+@include('wire-forms::partials.field-assets')
+
 @include('wire-forms::partials.field-wrapper-start')
 
 <div
-        x-data="{
-        content: '',
-        toolbar: @js($toolbarButtons),
-        activeFormats: {},
-
-        init() {
-            const initial = $wire.get('{{ $field->getWireModelAttribute() }}');
-            if (initial) {
-                this.content = initial;
-                this.$nextTick(() => { this.$refs.editor.innerHTML = this.content; });
-            }
-
-            $wire.$watch('{{ $field->getWireModelAttribute() }}', (val) => {
-                if (document.activeElement !== this.$refs.editor) {
-                    this.content = val || '';
-                    this.$refs.editor.innerHTML = this.content;
-                }
-            });
-        },
-
-        onInput() {
-            this.content = this.$refs.editor.innerHTML;
-            this.$refs.textarea.value = this.content;
-            this.$refs.textarea.dispatchEvent(new Event('input'));
-            this.updateActiveFormats();
-        },
-
-        exec(command, value = null) {
-            this.$refs.editor.focus();
-            document.execCommand(command, false, value);
-            this.onInput();
-        },
-
-        updateActiveFormats() {
-            this.activeFormats = {
-                bold: document.queryCommandState('bold'),
-                italic: document.queryCommandState('italic'),
-                underline: document.queryCommandState('underline'),
-                strikeThrough: document.queryCommandState('strikeThrough'),
-                insertOrderedList: document.queryCommandState('insertOrderedList'),
-                insertUnorderedList: document.queryCommandState('insertUnorderedList'),
-            };
-        },
-
-        insertLink() {
-            const url = prompt(@js($t('link_url')));
-            if (url) {
-                this.exec('createLink', url);
-            }
-        },
-
-        hasButton(name) {
-            return this.toolbar.includes(name);
-        }
-    }"
+        {{-- Body registered as `wireRichEditor`; only per-instance config here. --}}
+        x-data="wireRichEditor({
+            statePath: @js($field->getWireModelAttribute()),
+            toolbar: @js($toolbarButtons),
+            linkPrompt: @js($t('link_url')),
+        })"
         @class([
             'rounded-md border overflow-hidden',
             'border-gray-300 dark:border-gray-600',
@@ -86,7 +39,7 @@
                     type="button"
                     @click="exec('bold')" data-testid="form-editor-{{ $field->getStatePath() }}-bold"
                     :class="{ 'bg-gray-200 dark:bg-gray-600': activeFormats.bold }"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('bold') }}"
             >
                 {!! icon('bold', 'w-4 h-4', 'w-4 h-4') !!}
@@ -98,7 +51,7 @@
                     type="button"
                     @click="exec('italic')" data-testid="form-editor-{{ $field->getStatePath() }}-italic"
                     :class="{ 'bg-gray-200 dark:bg-gray-600': activeFormats.italic }"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('italic') }}"
             >
                 {!! icon('italic', 'w-4 h-4', 'w-4 h-4') !!}
@@ -110,7 +63,7 @@
                     type="button"
                     @click="exec('underline')" data-testid="form-editor-{{ $field->getStatePath() }}-underline"
                     :class="{ 'bg-gray-200 dark:bg-gray-600': activeFormats.underline }"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('underline') }}"
             >
                 {!! icon('underline', 'w-4 h-4', 'w-4 h-4') !!}
@@ -122,7 +75,7 @@
                     type="button"
                     @click="exec('strikeThrough')" data-testid="form-editor-{{ $field->getStatePath() }}-strikeThrough"
                     :class="{ 'bg-gray-200 dark:bg-gray-600': activeFormats.strikeThrough }"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('strike') }}"
             >
                 {!! icon('strikethrough', 'w-4 h-4', 'w-4 h-4') !!}
@@ -139,12 +92,10 @@
             <button
                     type="button"
                     @click="exec('formatBlock', 'h2')"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('heading', ['level' => 2]) }}"
             >
-                <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M13 20h-2v-7H4v7H2V4h2v7h7V4h2v16zm8-12v12h-2v-9.796l-2 .536V8.67L19.5 8H21z"/>
-                </svg>
+                {!! icon('forms:heading-2', 'w-4 h-4') !!}
             </button>
         @endif
 
@@ -152,12 +103,10 @@
             <button
                     type="button"
                     @click="exec('formatBlock', 'h3')"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('heading', ['level' => 3]) }}"
             >
-                <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M13 20h-2v-7H4v7H2V4h2v7h7V4h2v16zm5.46-7.24c.61.17 1.07.51 1.39.99.32.49.49 1.06.49 1.71 0 1-.36 1.79-1.07 2.36-.72.58-1.71.87-2.99.87-1.2 0-2.17-.23-2.92-.68l.44-1.64c.68.41 1.42.62 2.22.62.63 0 1.12-.14 1.46-.43.34-.29.51-.69.51-1.21 0-.54-.18-.96-.53-1.26-.36-.3-.87-.45-1.54-.45h-.74v-1.5h.74c.6 0 1.07-.14 1.41-.42.34-.28.51-.67.51-1.16 0-.45-.15-.8-.46-1.06-.31-.25-.72-.38-1.24-.38-.72 0-1.38.21-2 .64l-.44-1.6c.74-.5 1.68-.75 2.82-.75 1.06 0 1.89.27 2.48.81.6.55.9 1.25.9 2.12 0 .93-.38 1.64-1.13 2.15z"/>
-                </svg>
+                {!! icon('forms:heading-3', 'w-4 h-4') !!}
             </button>
         @endif
 
@@ -166,7 +115,7 @@
                     type="button"
                     @click="exec('insertUnorderedList')" data-testid="form-editor-{{ $field->getStatePath() }}-insertUnorderedList"
                     :class="{ 'bg-gray-200 dark:bg-gray-600': activeFormats.insertUnorderedList }"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('bullet_list') }}"
             >
                 {!! icon('list-bullet', 'w-4 h-4', 'w-4 h-4') !!}
@@ -178,7 +127,7 @@
                     type="button"
                     @click="exec('insertOrderedList')" data-testid="form-editor-{{ $field->getStatePath() }}-insertOrderedList"
                     :class="{ 'bg-gray-200 dark:bg-gray-600': activeFormats.insertOrderedList }"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('ordered_list') }}"
             >
                 {!! icon('numbered-list', 'w-4 h-4', 'w-4 h-4') !!}
@@ -189,12 +138,10 @@
             <button
                     type="button"
                     @click="exec('formatBlock', 'blockquote')"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('blockquote') }}"
             >
-                <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M4.583 17.321C3.553 16.227 3 15 3 13.011c0-3.5 2.457-6.637 6.03-8.188l.893 1.378c-3.335 1.804-3.987 4.145-4.247 5.621.537-.278 1.24-.375 1.929-.311 1.804.167 3.226 1.648 3.226 3.489a3.5 3.5 0 01-3.5 3.5 3.871 3.871 0 01-2.748-1.179zm10 0C13.553 16.227 13 15 13 13.011c0-3.5 2.457-6.637 6.03-8.188l.893 1.378c-3.335 1.804-3.987 4.145-4.247 5.621.537-.278 1.24-.375 1.929-.311 1.804.167 3.226 1.648 3.226 3.489a3.5 3.5 0 01-3.5 3.5 3.871 3.871 0 01-2.748-1.179z"/>
-                </svg>
+                {!! icon('forms:blockquote', 'w-4 h-4') !!}
             </button>
         @endif
 
@@ -202,7 +149,7 @@
             <button
                     type="button"
                     @click="exec('formatBlock', 'pre')"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('code_block') }}"
             >
                 {!! icon('code-bracket', 'w-4 h-4', 'w-4 h-4') !!}
@@ -217,7 +164,7 @@
             <button
                     type="button"
                     @click="insertLink()"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('link') }}"
             >
                 {!! icon('link', 'w-4 h-4', 'w-4 h-4') !!}
@@ -232,7 +179,7 @@
             <button
                     type="button"
                     @click="exec('undo')" data-testid="form-editor-{{ $field->getStatePath() }}-undo"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('undo') }}"
             >
                 {!! icon('arrow-uturn-left', 'w-4 h-4', 'w-4 h-4') !!}
@@ -243,7 +190,7 @@
             <button
                     type="button"
                     @click="exec('redo')" data-testid="form-editor-{{ $field->getStatePath() }}-redo"
-                    class="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                    class="p-1.5 rounded-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
                     title="{{ $t('redo') }}"
             >
                 {!! icon('arrow-uturn-right', 'w-4 h-4', 'w-4 h-4') !!}

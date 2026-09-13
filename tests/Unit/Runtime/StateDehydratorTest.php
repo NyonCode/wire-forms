@@ -4,56 +4,67 @@ declare(strict_types=1);
 
 use NyonCode\WireCore\Foundation\Schema\Section;
 use NyonCode\WireForms\Components\Repeater;
+use NyonCode\WireForms\Components\Select;
 use NyonCode\WireForms\Components\TextInput;
 use NyonCode\WireForms\Forms\Runtime\StateDehydrator;
 
 /*
- * The schema walk behind both write paths (ADR 0021): Form::save() and an
- * action modal's submit. TextInput is the field under test only because its
- * transform is the cheapest to read — a cleared number stores null.
+ * The write-path transform on its own, away from any host.
+ *
+ * Two hosts drive it — a form save and an action modal — and both feed it a bag
+ * that came from a browser, which is to say a bag that may not have the shape
+ * the schema implies. What it does with a key it does not recognise, or a
+ * repeater value that is not a list, is the part neither host can assert.
  */
 
-it('dehydrates a field nested in a layout component', function () {
-    // The walk recurses through layouts, so a field inside a Section is not
-    // invisible to it just because it is not top-level.
-    $schema = [Section::make('Pricing')->schema([TextInput::make('discount')->numeric()])];
-
-    expect(StateDehydrator::dehydrate($schema, ['discount' => '']))
-        ->toBe(['discount' => null]);
-});
-
-it('dehydrates the children of a repeater nested in a layout component', function () {
+it('applies a field transform and then the owner callback, in that order', function () {
     $schema = [
-        Section::make('Rows')->schema([
-            Repeater::make('rows')->schema([TextInput::make('quantity')->numeric()]),
-        ]),
+        Select::make('status'),
+        TextInput::make('code')->dehydrateStateUsing(fn (mixed $state): string => strtoupper((string) $state)),
     ];
 
-    expect(StateDehydrator::dehydrate($schema, ['rows' => [['quantity' => '']]]))
-        ->toBe(['rows' => [['quantity' => null]]]);
+    expect((new StateDehydrator)->dehydrate(['status' => '', 'code' => 'abc'], $schema))
+        ->toBe(['status' => null, 'code' => 'ABC']);
 });
 
-it('leaves keys the schema does not name alone', function () {
-    $schema = [TextInput::make('discount')->numeric()];
+it('reaches a field nested in a layout component', function () {
+    $schema = [Section::make('Details')->schema([TextInput::make('price')->numeric()])];
 
-    expect(StateDehydrator::dehydrate($schema, ['note' => '']))
-        ->toBe(['note' => '']);
+    expect((new StateDehydrator)->dehydrate(['price' => ''], $schema))->toBe(['price' => null]);
 });
 
-it('skips a repeater whose bag entry is missing or is not a list of rows', function (mixed $bag, mixed $expected) {
-    // A repeater key can be absent (never touched) or hold a scalar (a host that
-    // wrote the bag itself). Neither is a set of rows to walk.
-    $schema = [Repeater::make('rows')->schema([TextInput::make('quantity')->numeric()])];
+it('leaves a key the schema does not declare exactly as it found it', function () {
+    expect((new StateDehydrator)->dehydrate(['ghost' => ''], [TextInput::make('price')->numeric()]))
+        ->toBe(['ghost' => '']);
+});
 
-    expect(StateDehydrator::dehydrate($schema, $bag))->toBe($expected);
-})->with([
-    'key absent' => [['other' => 1], ['other' => 1]],
-    'not an array' => [['rows' => ''], ['rows' => '']],
-]);
+it('dehydrates each repeater item, per child field', function () {
+    $schema = [Repeater::make('rows')->schema([TextInput::make('price')->numeric()])];
 
-it('skips a repeater row that is not an array of fields', function () {
-    $schema = [Repeater::make('rows')->schema([TextInput::make('quantity')->numeric()])];
+    expect((new StateDehydrator)->dehydrate(['rows' => [['price' => '10.5'], ['price' => '']]], $schema))
+        ->toBe(['rows' => [['price' => '10.5'], ['price' => null]]]);
+});
 
-    expect(StateDehydrator::dehydrate($schema, ['rows' => ['scrap', ['quantity' => '']]]))
-        ->toBe(['rows' => ['scrap', ['quantity' => null]]]);
+it('leaves a repeater key that does not hold a list alone', function () {
+    // The bag is client state: a repeater key can arrive as anything at all, and
+    // a walk that assumed a list would fatal on it.
+    $schema = [Repeater::make('rows')->schema([TextInput::make('price')->numeric()])];
+
+    expect((new StateDehydrator)->dehydrate(['rows' => 'not-a-list'], $schema))
+        ->toBe(['rows' => 'not-a-list'])
+        ->and((new StateDehydrator)->dehydrate([], $schema))->toBe([]);
+});
+
+it('skips a repeater item that is not an array, and still dehydrates its siblings', function () {
+    $schema = [Repeater::make('rows')->schema([TextInput::make('price')->numeric()])];
+
+    expect((new StateDehydrator)->dehydrate(['rows' => ['junk', ['price' => '']]], $schema))
+        ->toBe(['rows' => ['junk', ['price' => null]]]);
+});
+
+it('leaves a child key an item does not carry out of the item', function () {
+    $schema = [Repeater::make('rows')->schema([TextInput::make('price')->numeric()])];
+
+    expect((new StateDehydrator)->dehydrate(['rows' => [['other' => '']]], $schema))
+        ->toBe(['rows' => [['other' => '']]]);
 });

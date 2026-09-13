@@ -5,12 +5,16 @@ declare(strict_types=1);
 namespace NyonCode\WireForms\Concerns;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
 use NyonCode\WireCore\Actions\Action;
 use NyonCode\WireCore\Actions\ActionHalt;
 use NyonCode\WireCore\Actions\BulkAction;
+use NyonCode\WireCore\Actions\Contracts\ModalForm;
 use NyonCode\WireCore\Actions\HeaderAction;
 use NyonCode\WireCore\Actions\ModalStep;
+use NyonCode\WireCore\Core\Validation\ValidationPipeline;
 use NyonCode\WireForms\Forms\Form;
 use NyonCode\WireForms\Forms\Runtime\StateDehydrator;
 use Throwable;
@@ -50,6 +54,45 @@ trait InteractsWithActionForms
     protected function haltModalFormStatePath(): string
     {
         return 'actionModalHaltData';
+    }
+
+    /**
+     * Where this component parks its halt form between requests.
+     *
+     * The **cache**, not the session, and keyed by the Livewire component id.
+     * Two things were wrong with the session before 2.0. It was one global key
+     * (`wire.halt_form_instance`), so two tables on a page — or the same page in
+     * two tabs — restored each other's schema into their own halt modal. And on
+     * the `cookie` session driver a serialized schema does not fit in the 4 KB a
+     * cookie holds, so it was dropped in silence and the halt came back as a
+     * heading with no fields. A cache entry is server-side, has no such ceiling,
+     * and expires on its own if the user simply walks away.
+     */
+    protected function haltFormCacheKey(): string
+    {
+        return 'wire.halt_form.'.$this->getId();
+    }
+
+    /**
+     * Drop the parked copy, tolerating a cache store that cannot answer.
+     */
+    protected function forgetHaltForm(): void
+    {
+        try {
+            Cache::forget($this->haltFormCacheKey());
+        } catch (Throwable) {
+            // Nothing to forget if the store is not there.
+        }
+    }
+
+    /**
+     * How long a parked halt form stays readable. Long enough for someone to
+     * think about the question, short enough that an abandoned modal does not
+     * hold a schema in the cache all day.
+     */
+    protected function haltFormTtl(): int
+    {
+        return 1800;
     }
 
     /**
@@ -187,18 +230,18 @@ trait InteractsWithActionForms
     }
 
     /**
-     * Dehydrate the submitted bag through the active modal's own schema, so an
-     * action callback receives what the form would have persisted — a cleared
-     * Select as null rather than '', a date in its storage format and zone, a
-     * FileUpload as its stored path.
+     * Apply each field's dehydration to the modal's data before an action
+     * callback sees it — the wire-forms half of the core seam.
      *
-     * Without this the two write paths disagree: the same schema saved through
-     * Form::save() goes through {@see StateDehydrator}, while an action modal
-     * handed the raw Livewire state straight to the callback.
+     * Until this existed a form behaved differently depending on which door its
+     * values left through: `Form::save()` dehydrated, an action modal did not,
+     * so the same `Select` handed a record `null` and a callback `''`.
      *
-     * A wizard shares one bag across its steps, so every step's schema gets a
-     * pass — the fields of a step that is not on screen at submit time still
-     * own their values.
+     * Deliberately not part of {@see validateMountedActionForm()}. Validation
+     * runs once per wizard step and again on every footer submit, and a
+     * transform with a side effect — a `FileUpload` moving its upload to
+     * permanent storage — must not run once per step. This runs once, at the
+     * hand-over, and its result is not written back into the frame's bag.
      *
      * @param  array<string, mixed>  $data
      * @return array<string, mixed>
@@ -207,35 +250,53 @@ trait InteractsWithActionForms
     {
         [$action, $context] = $this->resolveCurrentActionForm();
 
-        // Defensive: submit paths resolve a non-null action before they get here.
+        // Defensive: every caller resolved a non-null action before submitting.
         // @codeCoverageIgnoreStart
         if ($action === null) {
             return $data;
         }
         // @codeCoverageIgnoreEnd
 
+        $dehydrator = new StateDehydrator;
         $record = $context instanceof Model ? $context : null;
-        $statePath = $this->actionFrameStatePath($this->topActionFrameIndex());
 
-        if ($action->hasMultipleSteps()) {
-            for ($step = 0; $step < $action->getStepCount(); $step++) {
-                $form = $action->getStepFormInstance($this, $context, $step, $statePath);
-
-                if ($form instanceof Form) {
-                    $data = StateDehydrator::dehydrate($form->getSchema(), $data, $record);
-                }
-            }
-
-            return $data;
+        foreach ($this->mountedActionFormSchemas($action, $context) as $schema) {
+            $data = $dehydrator->dehydrate($data, $schema, $record);
         }
 
-        // Reuse the instance validation already resolved for this frame.
-        $form = $this->actionModalFormInstance
-            ?? $this->buildModalActionFormInstance($action, $context);
+        return $data;
+    }
 
-        return $form instanceof Form
-            ? StateDehydrator::dehydrate($form->getSchema(), $data, $record)
-            : $data;
+    /**
+     * The schemas backing the active modal's data bag.
+     *
+     * A wizard's steps share one bag while each step's Form carries only its own
+     * schema, so every step is asked in turn — otherwise only the last step's
+     * fields would ever be dehydrated.
+     *
+     * @return array<int, array<int, mixed>>
+     */
+    protected function mountedActionFormSchemas(Action|BulkAction|HeaderAction $action, mixed $context): array
+    {
+        $statePath = $this->actionFrameStatePath($this->topActionFrameIndex());
+
+        $forms = $action->hasMultipleSteps()
+            ? array_map(
+                fn (int $step): ?ModalForm => $action->getStepFormInstance($this, $context, $step, $statePath),
+                range(0, $action->getStepCount() - 1),
+            )
+            : [$action->getFormInstance($this, $context, $statePath)];
+
+        $schemas = [];
+
+        foreach ($forms as $form) {
+            // Core hands back the ModalForm seam; only a concrete Form has one.
+            if ($form instanceof Form) {
+                $schemas[] = $form->getSchema();
+            }
+        }
+
+        return $schemas;
     }
 
     // ==========================================
@@ -355,26 +416,179 @@ trait InteractsWithActionForms
         }
 
         $formInstance->statePath($this->haltModalFormStatePath());
+
+        // Persist across Livewire re-renders — before the host is bound, not
+        // after. A Livewire component is not serializable, so binding it first
+        // made *every* halt form throw here: the fallback this exists for never
+        // fired once, the form was gone on the next request, and the confirm had
+        // no schema to shape its data with. The restore end re-binds the host, so
+        // the copy has no business carrying one.
+        //
+        // A schema holding a Closure (an options callback, a visible() condition)
+        // still cannot be serialized, and that is what the catch is for: the
+        // modal stays open and submits from the first render.
+        try {
+            // The cache store is the application's, and it may be missing its
+            // table, its server, or be `array` in a test — none of which is this
+            // modal's business to die of. A parked form is an optimisation for
+            // the *next* request; this one already has the instance.
+            Cache::put($this->haltFormCacheKey(), serialize($formInstance), $this->haltFormTtl());
+        } catch (Throwable $e) {
+            // A schema holding a Closure cannot be serialized, and the modal is
+            // still usable: it renders from the instance this request already
+            // has, and its declared rules live in state. What it loses is the
+            // *next* render — a failed validation comes back without fields — so
+            // this is written down rather than swallowed.
+            logger()->warning('wire: a halt form could not be kept for the next request, so its fields will not survive a failed validation. Give the halt a schema without closures, or validate through the halt\'s own rules.', [
+                'component' => static::class,
+                'reason' => $e->getMessage(),
+            ]);
+        }
+
         $formInstance->livewire($this);
         $this->haltModalFormInstance = $formInstance;
 
-        // Persist across Livewire re-renders; Form schema may contain
-        // non-serializable closures (options callbacks, validation rules), so we
-        // swallow the exception. If serialization fails the form won't survive
-        // polling re-renders, but the halt modal stays open and the user can
-        // still submit on first render.
-        try {
-            session()->put('wire.halt_form_instance', serialize($formInstance));
-        } catch (Throwable) {
-            // Non-serializable form — session fallback unavailable.
-        }
+        $this->seedHaltModalFormState($formInstance);
+    }
+
+    /**
+     * Give the host a chance to fill the bag the halt form's fields bind to.
+     *
+     * A field entangles a *path*, and Livewire refuses one that does not exist:
+     * an empty bag makes the browser throw `cannot be found on component` and the
+     * field never binds. A host whose halt data lives in a state container gets
+     * its slots from the container; one holding a plain public array has to seed
+     * it, which is what this seam is for.
+     */
+    protected function seedHaltModalFormState(Form $form): void
+    {
+        // No-op by default.
     }
 
     /**
      * Get the resolved Form instance for the halt modal, if any.
+     *
+     * Restored from the parked copy on any request that did not raise the halt —
+     * a failed validation, a poll tick, a live field. Without it the modal comes
+     * back as a heading and two buttons: the config still says it has a form,
+     * and there is no instance left to render the fields from.
+     *
+     * The restore lives here rather than in a host because both hosts need it
+     * and only one had it: a halt in a table survived a failed validation, the
+     * same halt on a standalone component came back empty.
      */
     public function getHaltModalFormInstance(): ?Form
     {
-        return $this->haltModalFormInstance;
+        if ($this->haltModalFormInstance !== null) {
+            return $this->haltModalFormInstance;
+        }
+
+        if (! $this->isHaltModalVisible()) {
+            return null;
+        }
+
+        $key = $this->haltFormCacheKey();
+
+        try {
+            $parked = Cache::get($key);
+            $restored = is_string($parked) ? unserialize($parked) : null;
+        } catch (Throwable) {
+            // A cache store that cannot answer is the same as one with nothing
+            // in it: the modal renders without fields rather than throwing on a
+            // page that is only trying to draw a confirmation.
+            return null;
+        }
+
+        if (! $restored instanceof Form) {
+            $this->forgetHaltForm();
+
+            return null;
+        }
+
+        $restored->livewire($this);
+
+        return $this->haltModalFormInstance = $restored;
+    }
+
+    /**
+     * Validate a halt modal's form before its action is re-executed.
+     *
+     * Two layers, the same two an action modal has: the fields' own rules
+     * (`->required()`, `->rules()`), asked of the Form itself, and the extra
+     * rules the halt declared with {@see ActionHalt::validation()} against the
+     * bag as a whole.
+     *
+     * The declared rules are written against bare field names, and their failures
+     * are re-keyed onto the paths the halt form's inputs are bound to. A field
+     * looks itself up by state path, and a confirmation modal renders no error
+     * summary to fall back on — reported unscoped, the message would have nowhere
+     * to appear and the confirm would look like it had simply done nothing.
+     *
+     * When the halt form could not be restored — a schema holding a Closure
+     * cannot be serialized into the session — only the declared rules run. They
+     * live in the halt config, which is plain state and always survives.
+     *
+     * @param  array<string, mixed>  $data
+     * @param  array<string, mixed>  $rules
+     * @param  array<string, string>  $messages
+     * @param  array<string, string>  $attributes
+     *
+     * @throws ValidationException
+     */
+    protected function validateHaltModalForm(array $data, array $rules = [], array $messages = [], array $attributes = []): void
+    {
+        $this->getHaltModalFormInstance()?->validate();
+
+        if ($rules === []) {
+            return;
+        }
+
+        $result = app(ValidationPipeline::class)->validate($data, $rules, $messages, $attributes);
+
+        if (! $result->failed()) {
+            return;
+        }
+
+        $statePath = $this->haltModalFormStatePath();
+
+        $scoped = [];
+
+        foreach ($result->errors() as $field => $errors) {
+            $scoped["{$statePath}.{$field}"] = $errors;
+        }
+
+        throw ValidationException::withMessages($scoped);
+    }
+
+    /**
+     * Apply each field's dehydration to a halt modal's data before the halted
+     * action is re-executed with it.
+     *
+     * The halt modal is the third door out of a form — `Form::save()`, an action
+     * modal, and this — and it is the one whose form the *action itself* asked
+     * for mid-flight (`$halt()->form([...])`). Its fields bind straight to the
+     * halt data bag ({@see haltModalFormStatePath()}), so that bag is the form's
+     * live state and gets the same treatment as any other: a cleared select
+     * arrives as null, a date in its storage format, an upload as a stored path.
+     *
+     * Unlike {@see dehydrateMountedActionFormData()} this has no counterpart in
+     * wire-core, because nothing in wire-core re-executes a halted action —
+     * `showHaltModal()` only records the state, and the host owns the confirm.
+     *
+     * Only keys the halt form declares are touched, so data the halt carried over
+     * from the original action passes through as it arrived.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    protected function dehydrateHaltModalFormData(array $data, ?Model $record = null): array
+    {
+        $form = $this->getHaltModalFormInstance();
+
+        if (! $form instanceof Form) {
+            return $data;
+        }
+
+        return (new StateDehydrator)->dehydrate($data, $form->getSchema(), $record);
     }
 }

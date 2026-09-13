@@ -2,74 +2,116 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
 use Livewire\Component;
-use Livewire\Features\SupportTesting\Testable;
 use Livewire\Livewire;
 use NyonCode\WireCore\Actions\Action;
+use NyonCode\WireCore\Actions\ModalFooterAction;
 use NyonCode\WireCore\Actions\ModalStep;
-use NyonCode\WireForms\Components\Repeater;
+use NyonCode\WireCore\Foundation\Contracts\Enum\HasLabel;
 use NyonCode\WireForms\Components\Select;
 use NyonCode\WireForms\Components\TextInput;
 use NyonCode\WireForms\Concerns\WithActions;
 
 /*
- * An action modal's submitted bag goes through the same write-path seam as
- * Form::save() (ADR 0021).
+ * A form's state leaves through two doors, and both apply the same transforms.
  *
- * Before this, the seam had two hosts and the action modal was not one of them:
- * the callback got raw Livewire state. A cleared number input submits '', which
- * no numeric column can hold — MySQL in strict mode refuses the insert outright
- * ("Incorrect decimal value: ''") — and a cleared Select submitted '' even
- * though Select::dehydrateState() has turned that into null on the save path
- * all along. The same schema wrote different values depending on which host
- * persisted it.
+ * `Form::save()` dehydrated; an action modal did not — it handed the callback
+ * the raw wire bag. So the very convention the package documents for itself
+ * ("an unselected select stores null, not an empty string") held when a form was
+ * saved and quietly lapsed when the same fields were shown in a modal: an enum
+ * cast then threw on `''`, and a numeric column got an empty string. The two
+ * doors ask the same StateDehydrator now.
  */
 
-class ActionDehydrationHost extends Component
+enum AfdStatus: string implements HasLabel
+{
+    case Draft = 'draft';
+    case Published = 'published';
+
+    public function getLabel(): ?string
+    {
+        return ucfirst($this->value);
+    }
+}
+
+class AfdArticle extends Model
+{
+    protected $table = 'afd_articles';
+
+    protected $guarded = [];
+
+    public $timestamps = false;
+
+    protected $casts = ['status' => AfdStatus::class];
+}
+
+class AfdHost extends Component
 {
     use WithActions;
 
-    /** @var array<string, mixed>|null What the action callback actually received. */
-    public ?array $submitted = null;
+    public ?AfdArticle $record = null;
+
+    /** @var array<string, mixed> What the last action callback was handed. */
+    public array $seen = [];
+
+    public function mount(?int $id = null): void
+    {
+        $this->record = $id ? AfdArticle::query()->find($id) : null;
+    }
 
     protected function actions(): array
     {
-        return [$this->editAction(), $this->wizardAction(), $this->repeaterAction()];
-    }
+        return [
+            // The plain case: a select and a number input, both emptied.
+            Action::make('edit')
+                ->form([
+                    Select::make('status')->options(AfdStatus::class)->placeholder('None'),
+                    TextInput::make('price')->numeric(),
+                ])
+                ->fillFormUsing(fn () => ['status' => $this->record?->status, 'price' => $this->record?->price])
+                ->action(function (array $data): void {
+                    $this->seen = $data;
+                    $this->record?->update($data);
+                }),
 
-    public function editAction(): Action
-    {
-        return Action::make('edit')
-            ->form([
-                TextInput::make('discount')->numeric(),
-                TextInput::make('note'),
-                Select::make('status')->options(['draft' => 'Draft', 'published' => 'Published']),
-            ])
-            ->action(fn (array $data) => $this->submitted = $data);
-    }
+            // The owner's own transform, which the save path runs last and the
+            // modal path did not run at all.
+            Action::make('editWithCallback')
+                ->form([
+                    TextInput::make('code')->dehydrateStateUsing(fn (mixed $state): string => strtoupper((string) $state)),
+                ])
+                // Submits the form without closing, so the frame's bag can be
+                // inspected after the callback has been handed its data.
+                ->modalFooterActions([
+                    ModalFooterAction::make('apply')
+                        ->submitsForm()
+                        ->action(fn (array $data) => $this->seen = $data),
+                    ModalFooterAction::make('peek')
+                        ->action(fn (array $data) => $this->seen = $data),
+                ])
+                ->action(fn (array $data) => $this->seen = $data),
 
-    public function wizardAction(): Action
-    {
-        return Action::make('wizard')
-            ->steps([
-                ModalStep::make('amounts')
-                    ->schema([TextInput::make('discount')->numeric()]),
-                ModalStep::make('details')
-                    ->schema([TextInput::make('note')]),
-            ])
-            ->action(fn (array $data) => $this->submitted = $data);
-    }
+            // A wizard shares one bag across steps while each step's Form knows
+            // only its own schema — so every step has to be asked.
+            Action::make('onboard')
+                ->steps([
+                    ModalStep::make('One')->schema([Select::make('status')->options(AfdStatus::class)->placeholder('None')]),
+                    ModalStep::make('Two')->schema([TextInput::make('price')->numeric()]),
+                ])
+                ->action(fn (array $data) => $this->seen = $data),
 
-    public function repeaterAction(): Action
-    {
-        return Action::make('repeater')
-            ->form([
-                Repeater::make('rows')->schema([
-                    TextInput::make('quantity')->numeric(),
-                    TextInput::make('label'),
+            // A footer action that submits the form takes the same door.
+            Action::make('editWithFooter')
+                ->form([Select::make('status')->options(AfdStatus::class)->placeholder('None')])
+                ->modalFooterActions([
+                    ModalFooterAction::make('apply')
+                        ->submitsForm()
+                        ->action(fn (array $data) => $this->seen = $data),
                 ]),
-            ])
-            ->action(fn (array $data) => $this->submitted = $data);
+        ];
     }
 
     public function render(): string
@@ -82,78 +124,104 @@ class ActionDehydrationHost extends Component
     }
 }
 
-/**
- * The submitted bag as the action callback received it.
- *
- * Read back off the instance rather than asserted with assertSet(): Livewire
- * compares loosely, so `'' == null` passes and a test written that way stays
- * green with the whole seam removed — which is how it was first written here.
- *
- * @return array<string, mixed>
- */
-function submittedBag(Testable $component): array
-{
-    return $component->instance()->submitted ?? [];
-}
-
-it('stores a cleared number input as null, leaving text alone', function () {
-    $component = Livewire::test(ActionDehydrationHost::class)
-        ->call('mountAction', 'edit')
-        ->set('mountedActions.0.data.discount', '')
-        ->set('mountedActions.0.data.note', '')
-        ->call('callMountedAction');
-
-    $bag = submittedBag($component);
-
-    expect($bag['discount'])->toBeNull()
-        // '' is a legitimate string: a non-nullable text column holds one.
-        ->and($bag['note'])->toBe('');
+beforeEach(function () {
+    Schema::dropIfExists('afd_articles');
+    Schema::create('afd_articles', function (Blueprint $table): void {
+        $table->id();
+        $table->string('status')->nullable();
+        $table->decimal('price', 10, 2)->nullable();
+    });
 });
 
-it('keeps a number that was actually entered', function () {
-    $component = Livewire::test(ActionDehydrationHost::class)
-        ->call('mountAction', 'edit')
-        ->set('mountedActions.0.data.discount', '12.5')
-        ->call('callMountedAction');
+it('hands the callback null for a cleared select, not an empty string', function () {
+    $article = AfdArticle::query()->create(['status' => 'published', 'price' => 10.5]);
 
-    expect(submittedBag($component)['discount'])->toBe('12.5');
-});
-
-it('applies a fields own dehydration to the action bag, not just to Form::save', function () {
-    // Select has implemented the seam since ADR 0021; only the save path ran it.
-    $component = Livewire::test(ActionDehydrationHost::class)
+    Livewire::test(AfdHost::class, ['id' => $article->id])
         ->call('mountAction', 'edit')
         ->set('mountedActions.0.data.status', '')
+        ->call('callMountedAction')
+        ->assertSet('seen.status', null, strict: true);
+});
+
+it('hands the callback null for a cleared numeric input', function () {
+    $article = AfdArticle::query()->create(['status' => 'published', 'price' => 10.5]);
+
+    Livewire::test(AfdHost::class, ['id' => $article->id])
+        ->call('mountAction', 'edit')
+        ->set('mountedActions.0.data.price', '')
+        ->call('callMountedAction')
+        ->assertSet('seen.price', null, strict: true);
+});
+
+it('lets an enum-cast column be cleared from a modal without the cast throwing', function () {
+    $article = AfdArticle::query()->create(['status' => 'published', 'price' => 10.5]);
+
+    Livewire::test(AfdHost::class, ['id' => $article->id])
+        ->call('mountAction', 'edit')
+        ->set('mountedActions.0.data.status', '')
+        ->set('mountedActions.0.data.price', '')
         ->call('callMountedAction');
 
-    expect(submittedBag($component)['status'])->toBeNull();
+    expect($article->fresh()->status)->toBeNull();
+});
+
+it('still hands over a value the fields did not have to touch', function () {
+    $article = AfdArticle::query()->create(['status' => null, 'price' => null]);
+
+    Livewire::test(AfdHost::class, ['id' => $article->id])
+        ->call('mountAction', 'edit')
+        ->set('mountedActions.0.data.status', 'draft')
+        ->set('mountedActions.0.data.price', '9.99')
+        ->call('callMountedAction')
+        ->assertSet('seen.status', 'draft')
+        ->assertSet('seen.price', '9.99');
+});
+
+it("runs the owner's dehydrateStateUsing() on the modal path too", function () {
+    Livewire::test(AfdHost::class)
+        ->call('mountAction', 'editWithCallback')
+        ->set('mountedActions.0.data.code', 'abc')
+        ->call('callMountedAction')
+        ->assertSet('seen.code', 'ABC');
 });
 
 it('dehydrates every wizard step, not only the one on screen at submit', function () {
-    $component = Livewire::test(ActionDehydrationHost::class)
-        ->call('mountAction', 'wizard')
-        ->set('mountedActions.0.data.discount', '')
+    Livewire::test(AfdHost::class)
+        ->call('mountAction', 'onboard')
+        ->set('mountedActions.0.data.status', '')
         ->call('nextActionModalStep')
-        ->set('mountedActions.0.data.note', 'ok')
-        ->call('callMountedAction');
-
-    $bag = submittedBag($component);
-
-    expect($bag['discount'])->toBeNull()
-        ->and($bag['note'])->toBe('ok');
+        ->set('mountedActions.0.data.price', '')
+        ->call('callMountedAction')
+        ->assertSet('seen.status', null, strict: true)
+        ->assertSet('seen.price', null, strict: true);
 });
 
-it('dehydrates repeater children per item', function () {
-    $component = Livewire::test(ActionDehydrationHost::class)
-        ->call('mountAction', 'repeater')
-        ->set('mountedActions.0.data.rows', [
-            ['quantity' => '', 'label' => 'first'],
-            ['quantity' => '3', 'label' => ''],
-        ])
-        ->call('callMountedAction');
+it('dehydrates for a footer action that submits the form', function () {
+    Livewire::test(AfdHost::class)
+        ->call('mountAction', 'editWithFooter')
+        ->set('mountedActions.0.data.status', '')
+        ->call('callModalFooterAction', 'apply')
+        ->assertSet('seen.status', null, strict: true);
+});
 
-    expect(submittedBag($component)['rows'])->toBe([
-        ['quantity' => null, 'label' => 'first'],
-        ['quantity' => '3', 'label' => ''],
-    ]);
+it('leaves a non-submitting footer action the raw bag, which is what $get/$set see', function () {
+    // Not a hand-over: it works on live state, and must not run a transform with
+    // a side effect on a click that was never a submit.
+    Livewire::test(AfdHost::class)
+        ->call('mountAction', 'editWithCallback')
+        ->set('mountedActions.0.data.code', 'abc')
+        ->call('callModalFooterAction', 'peek')
+        ->assertSet('seen.code', 'abc');
+});
+
+it('leaves the live state bag alone — the browser is still bound to it', function () {
+    // Dehydration happens at the hand-over, not in the frame's data. Writing the
+    // result back would re-dehydrate an already-transformed value on the next
+    // submit, and would move a field's value under the open modal.
+    Livewire::test(AfdHost::class)
+        ->call('mountAction', 'editWithCallback')
+        ->set('mountedActions.0.data.code', 'abc')
+        ->call('callModalFooterAction', 'apply')
+        ->assertSet('seen.code', 'ABC')
+        ->assertSet('mountedActions.0.data.code', 'abc');
 });

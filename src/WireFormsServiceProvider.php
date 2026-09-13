@@ -6,14 +6,18 @@ namespace NyonCode\WireForms;
 
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Route;
+use Livewire\ComponentHookRegistry;
 use NyonCode\LaravelPackageToolkit\Commands\InstallCommand;
 use NyonCode\LaravelPackageToolkit\Packager;
 use NyonCode\LaravelPackageToolkit\PackageServiceProvider;
 use NyonCode\WireCore\Actions\Contracts\ModalFormFactory;
 use NyonCode\WireCore\Foundation\Assets\Bundle;
+use NyonCode\WireCore\Foundation\Icons\IconManager;
 use NyonCode\WireForms\Forms\Form;
+use NyonCode\WireForms\Forms\Runtime\FieldPartialHook;
 use NyonCode\WireForms\Forms\Support\FormModalFormFactory;
 use NyonCode\WireForms\Integration\ActionMacros;
+use NyonCode\WireForms\Support\Icons\FormsIconSet;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class WireFormsServiceProvider extends PackageServiceProvider
@@ -24,6 +28,17 @@ class WireFormsServiceProvider extends PackageServiceProvider
     /**
      * @throws \Exception
      */
+    public function register(): void
+    {
+        parent::register();
+
+        // In the REGISTER phase, for the same reason wire-core registers its own:
+        // ComponentHookRegistry::boot() walks what is registered at boot time, so
+        // a hook added later is silently absent for the first component of the
+        // process.
+        ComponentHookRegistry::register(FieldPartialHook::class);
+    }
+
     public function configure(Packager $packager): void
     {
         $packager
@@ -39,12 +54,25 @@ class WireFormsServiceProvider extends PackageServiceProvider
                 Blade::componentNamespace('NyonCode\\WireForms\\Components', 'wire-forms');
                 ActionMacros::register();
 
-                $this->registerAssetRoutes();
+                Bundle::serve('wire-forms', self::ASSETS_PATH);
+                $this->registerTiptapRoute();
+
+                // The glyphs Heroicons has no answer for, as `forms:bold` and
+                // friends. Registering the set costs nothing until one is asked
+                // for — the bodies load on first use — and it is what keeps the
+                // editors and the rating field free of inline <svg>
+                // (AI_CODING_STANDARD.md, Rendering § Icons).
+                app(IconManager::class)->registerIconSet(new FormsIconSet, 'forms');
             })
             ->hasConfig()
             ->hasViews()
             ->hasAssets('dist', entries: [
                 Bundle::make('wire-forms-image.js'),
+                // The field controllers (date/time pickers, tags, rating, the
+                // editors, the colour picker, OTP, phone, signature). A
+                // registrar, so it ships with the document rather than being
+                // delivered per field — see architecture/assets.md.
+                Bundle::make('wire-forms-fields.js'),
             ])
             ->hasAssetFallback(Bundle::servedByRoute('wire-forms'))
             ->hasTranslations('resources/lang')
@@ -60,24 +88,15 @@ class WireFormsServiceProvider extends PackageServiceProvider
     }
 
     /**
-     * Serve the package's pre-bundled JS directly so field views can inject it
-     * without the consumer running npm, a build step, or `vendor:publish`.
+     * Serve the TipTap editor's code-split ESM bundle by filename.
+     *
+     * Not `Bundle::serve()`: that route takes a bundle id and answers with one
+     * IIFE, while these are ESM entries whose relative `import "./chunk-<hash>.js"`
+     * has to resolve against the same directory. Same delivery decision (ADR 0024),
+     * different shape.
      */
-    protected function registerAssetRoutes(): void
+    protected function registerTiptapRoute(): void
     {
-        Route::get('/wire-forms/assets/{asset}.js', function (string $asset): BinaryFileResponse {
-            $file = self::ASSETS_PATH.'/wire-forms-'.basename($asset).'.js';
-
-            abort_unless(is_file($file), 404);
-
-            return response()
-                ->file($file, ['Content-Type' => 'application/javascript; charset=utf-8'])
-                ->setPublic()
-                ->setMaxAge(31536000);
-        })
-            ->where('asset', '[A-Za-z0-9_-]+')
-            ->name('wire-forms.asset');
-
         // The TipTap editor ships as an ESM code-split bundle (entry + shared core
         // chunk + opt-in addon entry); serve any .js from dist/tiptap by filename so
         // an entry's relative `import "./chunk-<hash>.js"` resolves. basename() bars

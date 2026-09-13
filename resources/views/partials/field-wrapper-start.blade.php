@@ -2,27 +2,29 @@
     $statePath = $field->getStatePath();
     $hasError = $errors->has($statePath);
     $columnSpan = $field->getColumnSpan();
-    // extraAttributes() is declared by every field through HasExtraAttributes but
-    // was rendered by nothing, so the setter did not do what it says. The outer
-    // element is this wrapper, so it belongs here — once, for every field type.
-    $extraAttributes = method_exists($field, 'getExtraAttributes') ? $field->getExtraAttributes() : [];
 @endphp
 
 <div
     wire:key="field-{{ $statePath }}"
+    {{-- The anchor a field partial replaces. Emitted only where the form asked
+         for it, the way the table gates its row anchors: an anchor costs an
+         attribute, and `partials.js` errors on a duplicate name, so a form that
+         will never send one should not carry it. --}}
+    @if($fieldPartials ?? false) wire:partial="field-{{ $statePath }}" @endif
     data-testid="form-field-{{ $statePath }}"
+    @wireEl('form-field')
     data-field="{{ $statePath }}"
     @class([
         'wire-field relative',
         'sm:col-span-1' => $columnSpan === 1,
         'sm:col-span-2 md:col-span-2' => $columnSpan === 2 || $columnSpan === 'full',
     ])
-    @foreach($extraAttributes as $attribute => $value)
-        {{ $attribute }}="{{ $value }}"
-    @endforeach
+    @wireExtraAttributes($field)
 >
 
-    @if($field->getLabel() && !($hideLabel ?? false) && !$field->isLabelHidden())
+    {{-- $hideLabel is this wrapper's own override (a layout that already names the
+         field); the rest of the rule lives on HasLabel so every surface agrees. --}}
+    @if($field->hasVisibleLabel() && !($hideLabel ?? false))
         <label for="{{ $field->getId() }}" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             {{ $field->getLabel() }}
             @if($field->isRequired())

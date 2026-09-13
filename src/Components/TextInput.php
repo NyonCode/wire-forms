@@ -6,18 +6,20 @@ namespace NyonCode\WireForms\Components;
 
 use Closure;
 use Illuminate\Database\Eloquent\Model;
+use NyonCode\WireCore\Foundation\Concerns\CanBeNullable;
 use NyonCode\WireCore\Foundation\Concerns\HasExtraInputAttributes;
 use NyonCode\WireCore\Foundation\Contracts\DehydratesState;
 use NyonCode\WireCore\Foundation\Support\EnumResolver;
-/**
- * Text input field with type variants (email, password, tel, url, numeric, integer).
- *
- * Supports prefix/suffix, mask, datalist, input mode, autocomplete.
- */
+use NyonCode\WireForms\Concerns\CanSubmitNatively;
 use NyonCode\WireForms\Concerns\HasCharacterLimits;
+use NyonCode\WireForms\Contracts\SupportsNativeSubmit;
+use NyonCode\WireForms\Exceptions\FormConfigurationException;
+use NyonCode\WireForms\Support\FieldBounds;
 
-class TextInput extends Field implements DehydratesState
+class TextInput extends Field implements DehydratesState, SupportsNativeSubmit
 {
+    use CanBeNullable;
+    use CanSubmitNatively;
     use HasCharacterLimits;
     use HasExtraInputAttributes;
 
@@ -30,6 +32,8 @@ class TextInput extends Field implements DehydratesState
     protected int|float|string|null $step = null;
 
     protected ?string $mask = null;
+
+    protected ?string $dynamicMask = null;
 
     protected ?string $inputMode = null;
 
@@ -112,53 +116,80 @@ class TextInput extends Field implements DehydratesState
         return $this;
     }
 
-    // ─── State ─────────────────────────────────────────────────────
-
-    /**
-     * A cleared number input stores null, not an empty string.
-     *
-     * An emptied `<input type="number">` submits `''`, and no numeric column can
-     * hold that: MySQL in strict mode rejects the write outright ("Incorrect
-     * decimal value: ''") and a lenient driver silently stores 0. Neither is
-     * what an author who left an optional amount blank asked for. This is the
-     * same rule Select already applies to its placeholder choice.
-     *
-     * Text is deliberately untouched: `''` is a legitimate string value, and
-     * turning it into null would break a non-nullable column that holds one.
-     */
-    public function dehydrateState(mixed $state, ?Model $record = null): mixed
-    {
-        if ($this->inputType !== 'number') {
-            return $state;
-        }
-
-        return (is_string($state) && trim($state) === '') ? null : $state;
-    }
-
     // ─── Constraints ───────────────────────────────────────────────
 
-    /** Set the minimum numeric value (a value or a `$get`-aware Closure). */
+    /**
+     * Set the minimum numeric value (a value or a `$get`-aware Closure).
+     *
+     * @throws FormConfigurationException When it exceeds a literal maxValue().
+     */
     public function minValue(int|float|string|Closure|null $value): static
     {
+        // Only a pair of literal numbers can be compared here. A Closure needs a
+        // record to evaluate against and a string may be a date or a datetime-local
+        // bound, which this does not try to parse — those stay the caller's to keep
+        // consistent, and the browser rejects the obvious cases anyway.
+        FieldBounds::assertOrdered(
+            static::class,
+            'minValue',
+            self::comparableBound($value),
+            'maxValue',
+            self::comparableBound($this->maxValue),
+        );
+
         $this->minValue = $value;
 
         return $this;
     }
 
-    /** Set the maximum numeric value (a value or a `$get`-aware Closure). */
+    /**
+     * Set the maximum numeric value (a value or a `$get`-aware Closure).
+     *
+     * @throws FormConfigurationException When it falls below a literal minValue().
+     */
     public function maxValue(int|float|string|Closure|null $value): static
     {
+        FieldBounds::assertOrdered(
+            static::class,
+            'minValue',
+            self::comparableBound($this->minValue),
+            'maxValue',
+            self::comparableBound($value),
+        );
+
         $this->maxValue = $value;
 
         return $this;
     }
 
-    /** Set the numeric step increment. */
+    /**
+     * Set the numeric step increment.
+     *
+     * @throws FormConfigurationException When a numeric step is not greater than 0.
+     */
     public function step(int|float|string|null $step): static
     {
+        // `'any'` is the one non-numeric step HTML defines, and it is the reason
+        // this setter takes a string at all — so only a numeric one is checked.
+        if (is_int($step) || is_float($step)) {
+            FieldBounds::assertPositive(static::class, 'step', $step);
+        }
+
         $this->step = $step;
 
         return $this;
+    }
+
+    /**
+     * The bound as a number, or null when it is not one this can compare.
+     */
+    private static function comparableBound(int|float|string|Closure|null $value): int|float|null
+    {
+        if (is_int($value) || is_float($value)) {
+            return $value;
+        }
+
+        return null;
     }
 
     // ─── Extras ────────────────────────────────────────────────────
@@ -167,6 +198,21 @@ class TextInput extends Field implements DehydratesState
     public function mask(?string $mask): static
     {
         $this->mask = $mask;
+
+        return $this;
+    }
+
+    /**
+     * Apply a mask that is recomputed on every keystroke, written as the Alpine
+     * expression `x-mask:dynamic` evaluates — `$money($input, ',', ' ')`,
+     * `$input.startsWith('34') ? '9999 999999 99999' : '9999 9999 9999 9999'`.
+     *
+     * A pattern that never changes belongs in {@see mask()}; this one costs an
+     * evaluation per keypress and takes precedence when both are set.
+     */
+    public function dynamicMask(?string $expression): static
+    {
+        $this->dynamicMask = $expression;
 
         return $this;
     }
@@ -241,6 +287,11 @@ class TextInput extends Field implements DehydratesState
         return $this->mask;
     }
 
+    public function getDynamicMask(): ?string
+    {
+        return $this->dynamicMask;
+    }
+
     public function getInputMode(): ?string
     {
         return $this->inputMode;
@@ -262,6 +313,31 @@ class TextInput extends Field implements DehydratesState
     public function isRevealable(): bool
     {
         return $this->isRevealable;
+    }
+
+    // ─── Save path ─────────────────────────────────────────────────
+
+    /**
+     * A cleared input reaches the record as `null` when `''` cannot be what the
+     * author meant.
+     *
+     * A `<input type=number>` submits `''` when it is emptied — there is no
+     * other value a browser can send — and `''` is not a figure. Postgres and
+     * strict-mode MySQL reject it on a numeric column; SQLite stores an empty
+     * string next to the decimals. So a number input nullifies without being
+     * asked, exactly as {@see Select} does for its empty option.
+     *
+     * Every other type has to be told with {@see nullable()}, because on a text
+     * column `''` is a value an author may well mean, and a `NOT NULL` column
+     * would reject the null a blanket rule wrote for them.
+     */
+    public function dehydrateState(mixed $state, ?Model $record = null): mixed
+    {
+        if ($state === '' && $this->inputType === 'number') {
+            return null;
+        }
+
+        return $this->nullifyEmptyState($state);
     }
 
     protected function viewName(): string

@@ -3,8 +3,12 @@
 
     assert($field instanceof Slider);
 
-    $wireModifier = $field->getWireModelModifier();
+    // @entangle takes no wire:model modifiers — see CanBeLive::getEntangleModifier().
+
+    $entangleModifier = $field->getEntangleModifier();
 @endphp
+
+@include('wire-forms::partials.field-assets')
 
 @include('wire-forms::partials.field-wrapper-start')
 
@@ -40,24 +44,12 @@
 @endonce
 
 <div
-    x-data="{
-        value: @entangle($field->getWireModelAttribute()){{ $wireModifier ? '.' . $wireModifier : '' }},
-        min: {{ $field->getMin() }},
-        max: {{ $field->getMax() }},
-        init() {
-            if (this.value === null || this.value === undefined || this.value === '') {
-                this.value = this.min;
-            }
-        },
-        get percent() {
-            const span = this.max - this.min;
-            if (span <= 0) return 0;
-            return Math.min(100, Math.max(0, ((this.value - this.min) / span) * 100));
-        },
-        get trackBackground() {
-            return `linear-gradient(to right, var(--wf-fill) ${this.percent}%, var(--wf-track) ${this.percent}%)`;
-        }
-    }"
+    {{-- Body registered as `wireSlider`; only per-instance config here. --}}
+    x-data="wireSlider({
+        state: @entangle($field->getWireModelAttribute()){{ $entangleModifier ? '.' . $entangleModifier : '' }},
+        min: @js($field->getMin()),
+        max: @js($field->getMax()),
+    })"
     class="space-y-2"
 >
     <div class="flex items-center gap-3">

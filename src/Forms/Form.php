@@ -9,8 +9,15 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Contracts\Support\Htmlable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Traits\Macroable;
 use Livewire\Component;
+use Livewire\Drawer\Utils;
 use NyonCode\WireCore\Actions\Contracts\ModalForm;
+use NyonCode\WireCore\Core\Plugin\HookDispatch;
+use NyonCode\WireCore\Core\Plugin\Hooks\FormConfiguringPayload;
+use NyonCode\WireCore\Core\Plugin\Hooks\FormFillingPayload;
+use NyonCode\WireCore\Core\Plugin\HookTarget;
+use NyonCode\WireCore\Foundation\Enums\Hook;
 use NyonCode\WireCore\Foundation\Schema\Wizard;
 use NyonCode\WireForms\Forms\Config\ConfigBuilder;
 use NyonCode\WireForms\Forms\Config\FormConfig;
@@ -18,6 +25,7 @@ use NyonCode\WireForms\Forms\Runtime\FormRuntime;
 use NyonCode\WireForms\Forms\Runtime\StaleModelException;
 use NyonCode\WireForms\Forms\Runtime\StateManager;
 use NyonCode\WireForms\Rendering\FormRenderer;
+use NyonCode\WireForms\Support\NativeSubmit;
 use NyonCode\WireForms\Validation\FormValidationResolver;
 
 /**
@@ -28,6 +36,15 @@ use NyonCode\WireForms\Validation\FormValidationResolver;
  */
 class Form implements Htmlable, ModalForm
 {
+    /**
+     * Macroable, for the reason `Table` and `BaseAction` already are: an
+     * application or a package adds vocabulary to a class it does not own,
+     * applied where the component is built. ADR 0030 named this as the missing
+     * half of the extension story — the second-best path was absent everywhere
+     * the first one was.
+     */
+    use Macroable;
+
     private ConfigBuilder $configBuilder;
 
     private ?FormConfig $config = null;
@@ -40,6 +57,11 @@ class Form implements Htmlable, ModalForm
 
     private bool $usePolicy = false;
 
+    private bool $fieldPartials = false;
+
+    /** Whether the fields render for a browser submit rather than for Livewire. */
+    private bool $nativeSubmit = false;
+
     private ?Closure $authorizeUsingCallback = null;
 
     public function __construct()
@@ -51,6 +73,66 @@ class Form implements Htmlable, ModalForm
     public static function make(): static
     {
         return app(static::class);
+    }
+
+    /**
+     * Answer a field update with the fields that changed, not the whole view.
+     *
+     * A `wire:model` commit re-renders the host component: on a 12-field form
+     * that is 19 860 B of HTML to carry one field's 1 562 B — 12.7× raw, 2.3×
+     * gzipped — plus the browser morphing all of it.
+     *
+     * With this on, the host renders the form's fields, compares each one's
+     * markup against what it last sent, and answers with the ones that moved. It
+     * is a comparison rather than a dependency analysis on purpose: a sibling
+     * whose `options()`, `label()` or `helperText()` closure reads the updated
+     * field's state produces different markup, and different markup is all this
+     * has to notice.
+     *
+     * **What you trade.** The host's own view does not re-render on a field
+     * update, so anything it draws *outside* the form — a live preview of the
+     * data, a heading counting filled fields — keeps its previous value until the
+     * next full render. A field appearing or disappearing is a shape change no
+     * region can express and falls back to a full render on its own, so
+     * `visibleWhen()` siblings stay correct without any help.
+     */
+    public function fieldPartials(bool $condition = true): static
+    {
+        $this->fieldPartials = $condition;
+
+        return $this;
+    }
+
+    public function usesFieldPartials(): bool
+    {
+        return $this->fieldPartials;
+    }
+
+    /**
+     * Render the fields for the browser's own form submit instead of Livewire.
+     *
+     * The `<form>` element stays with whoever is rendering — a sign-in screen
+     * owns its action, its `@csrf` and its submit button — so this switches the
+     * fields and nothing around them. A field that cannot submit natively raises
+     * rather than rendering an input that posts nothing. See ADR 0036.
+     *
+     * Invalidates the memoized config, because the mode is decided on the
+     * schema: a form switched after something already read its config would
+     * otherwise render fields the switch never reached.
+     */
+    public function nativeSubmit(bool $native = true): static
+    {
+        $this->nativeSubmit = $native;
+
+        $this->invalidateConfig();
+
+        return $this;
+    }
+
+    /** Whether the fields render for a browser submit rather than for Livewire. */
+    public function submitsNatively(): bool
+    {
+        return $this->nativeSubmit;
     }
 
     // ─── Livewire binding ──────────────────────────────────────────
@@ -85,11 +167,33 @@ class Form implements Htmlable, ModalForm
     }
 
     /**
+     * Bind values to the fields, after anything installed has had its say.
+     *
+     * The way *in*, which forms had no seam for: `form.saving` shapes what
+     * reaches the record, and nothing shaped what reaches the fields — so an
+     * application could add a field to a module's form and could not change what
+     * an existing one arrives holding.
+     *
+     * Here and not in `getInitialState()`: that answers the different question of
+     * what a control needs before anything is bound, and an edit page calls both,
+     * so a hook on each would fire twice per page — which is how a callback that
+     * appends ends up appending twice.
+     *
      * @param  array<string, mixed>  $data
      */
     public function fill(array $data): static
     {
-        $this->getRuntime()->fill($data);
+        $payload = HookDispatch::typed(Hook::FormFilling, fn () => new FormFillingPayload(
+            form: $this,
+            data: $data,
+            target: HookTarget::for(
+                'form',
+                $this->stateManager->getLivewire(),
+                $this->configBuilder->getModel(),
+            ),
+        ));
+
+        $this->getRuntime()->fill($payload !== null ? $payload->data : $data);
 
         return $this;
     }
@@ -432,7 +536,32 @@ class Form implements Htmlable, ModalForm
 
     public function toHtml(): string
     {
-        return $this->getRenderer()->toHtml();
+        return $this->renderingFields(fn (): string => $this->getRenderer()->toHtml());
+    }
+
+    /**
+     * Run a render with the field-partial flag in view scope.
+     *
+     * The flag has to reach `partials.field-wrapper-start`, which is `@include`d
+     * from 23 field views — and a field builds its view from PHP with an explicit
+     * data array, so it inherits nothing from the form's own view. Shared scope is
+     * the only channel that reaches it, the same one Livewire uses for `$errors`.
+     *
+     * Public because the host renders single fields through it too: a partial
+     * whose markup lacked the anchor would not match the element it replaces, and
+     * the next update would find nothing to morph into.
+     *
+     * @param  Closure(): string  $render
+     */
+    public function renderingFields(Closure $render): string
+    {
+        $revert = Utils::shareWithViews('fieldPartials', $this->fieldPartials);
+
+        try {
+            return $render();
+        } finally {
+            $revert();
+        }
     }
 
     public function __toString(): string
@@ -445,10 +574,54 @@ class Form implements Htmlable, ModalForm
     private function getConfig(): FormConfig
     {
         if ($this->config === null) {
+            $this->configBuilder->schema($this->configuredSchema());
             $this->config = $this->configBuilder->build();
         }
 
         return $this->config;
+    }
+
+    /**
+     * The schema, after anything installed has had its say.
+     *
+     * The counterpart of `table.configuring`, and the reason it exists: a plugin
+     * — or a domain module's installer — could add a column to a list it does not
+     * own and could not add a field to the form beside it. Dispatched here
+     * because this is the one place a schema becomes a config, and the config is
+     * memoized, so it runs once per form rather than once per render.
+     *
+     * @return array<int, mixed>
+     */
+    private function configuredSchema(): array
+    {
+        $schema = $this->configBuilder->getSchema();
+
+        $payload = HookDispatch::typed(Hook::FormConfiguring, fn () => new FormConfiguringPayload(
+            form: $this,
+            schema: $schema,
+            target: HookTarget::for(
+                'form',
+                $this->stateManager->getLivewire(),
+                $this->configBuilder->getModel(),
+            ),
+        ));
+
+        // Against null, not `?? $schema`: a callback that filters every field out
+        // leaves an empty array, and the null-coalescing form would quietly put
+        // the fields back.
+        $schema = $payload !== null ? $payload->schema : $schema;
+
+        // After the hook, never before it. A field a plugin adds here is a field
+        // the browser has to post, and one switched on the declared schema would
+        // have left it bound with `wire:model` — an input that looks right and
+        // submits nothing, which is the exact failure ADR 0036 §2 refuses. The
+        // guard runs on what will actually render, so an unsupported field
+        // *added* by a callback is refused the same way a declared one is.
+        if ($this->nativeSubmit) {
+            NativeSubmit::prepare($schema);
+        }
+
+        return $schema;
     }
 
     private function getRuntime(): FormRuntime

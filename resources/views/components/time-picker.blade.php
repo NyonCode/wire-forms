@@ -27,6 +27,8 @@
     $typeable = $field->acceptsTypedInput();
 @endphp
 
+@include('wire-forms::partials.field-assets')
+
 @include('wire-forms::partials.field-wrapper-start')
 
 @unless($field->isNative())
@@ -39,140 +41,23 @@
     @include('wire-forms::partials.date-time-native-input')
 @else
     <div
-            x-data="{
-            open: false,
-            {{-- Honor live(): mirror the other entangle-based fields. --}}
-            value: $wire.entangle('{{ $field->getWireModelAttribute() }}'){{ $wireModifier ? '.' . $wireModifier : '' }},
+    {{-- Body registered as `wireTimePicker`
+         (packages/forms/resources/js/fields/time-picker.js); only the
+         per-instance config is markup. `state` is built here because
+         `$wire.entangle` is an Alpine magic, in scope only in an x-data
+         expression. --}}
+            x-data="wireTimePicker({
+            state: $wire.entangle('{{ $field->getWireModelAttribute() }}'){{ $wireModifier ? '.' . $wireModifier : '' }},
             hasSeconds: @js($field->hasSeconds()),
             interval: @js($field->getMinutesStep()),
             minTime: @js($minTime),
             maxTime: @js($maxTime),
             displayFormat: @js($field->getDisplayFormat()),
-
-            slots: [],
-            _float: null,
-
-            init() {
-                this.buildSlots();
-
-                this.$watch('open', (open) => {
-                    if (open) {
-                        this.$nextTick(() => {
-                            this._float = this.$float(this.$refs.trigger, this.$refs.panel, { placement: 'bottom-start', offset: 4{{ $sheetOnMobile ? ', sheetOnMobile: true, sheetBreakpoint: '.$sheetBpPx : '' }} });
-                            {{-- A list that always opened at 00:00 would make every
-                                 afternoon a scroll; land on the current choice, or on
-                                 the first slot the bounds allow. --}}
-                            this.scrollToActive();
-                        });
-                    } else if (this._float) {
-                        this._float();
-                        this._float = null;
-                    }
-                });
-            },
-
-            pad(n) { return String(n).padStart(2, '0'); },
-
-            {{-- Every slot of the day, at the field's interval. The interval is
-                 clamped to >= 1 server-side, so this always terminates. --}}
-            buildSlots() {
-                const out = [];
-                for (let m = 0; m < 24 * 60; m += this.interval) {
-                    const value = this.pad(Math.floor(m / 60)) + ':' + this.pad(m % 60)
-                        + (this.hasSeconds ? ':00' : '');
-                    out.push({ value, label: this.format(value), disabled: this.isDisabled(value) });
-                }
-                this.slots = out;
-            },
-
-            {{-- Compare on a seconds-bearing string, the shape the bounds are in. --}}
-            normalize(time) {
-                if (! time) return null;
-                const parts = String(time).split(':');
-                return this.pad(parts[0] ?? 0) + ':' + this.pad(parts[1] ?? 0) + ':' + this.pad(parts[2] ?? 0);
-            },
-
-            isDisabled(time) {
-                const t = this.normalize(time);
-                if (this.minTime && t < this.normalize(this.minTime)) return true;
-                if (this.maxTime && t > this.normalize(this.maxTime)) return true;
-                return false;
-            },
-
-            {{-- A stored value need not sit on a slot boundary (the interval can
-                 change under existing data), so this matches the instant, not the
-                 string, and simply highlights nothing when it falls between slots. --}}
-            isSelected(time) {
-                if (! this.value) return false;
-                return this.normalize(this.value) === this.normalize(time);
-            },
-
-            select(slot) {
-                if (slot.disabled) return;
-                this.value = slot.value;
-                this.open = false;
-            },
-
-            scrollToActive() {
-                const list = this.$refs.list;
-                if (! list) return;
-                const target = list.querySelector('[data-active=\'true\']')
-                    ?? list.querySelector('button:not([disabled])');
-                if (target) list.scrollTop = target.offsetTop - list.clientHeight / 2 + target.clientHeight / 2;
-            },
-
-            {{-- PHP date() tokens the picker can honour, on the time half only;
-                 anything else passes through and \\x escapes a literal. Kept in step
-                 with the DateTimePicker view's own formatter. --}}
-            format(time) {
-                if (! this.displayFormat) return time;
-
-                const [h, mi, sec] = String(time).split(':');
-                const num = (v) => String(parseInt(v ?? '0', 10) || 0);
-                const tokens = { H: this.pad(h), G: num(h), i: this.pad(mi), s: this.pad(sec ?? '00') };
-
-                let out = '';
-                for (let i = 0; i < this.displayFormat.length; i++) {
-                    const c = this.displayFormat[i];
-                    if (c === '\\') { out += this.displayFormat[++i] ?? ''; continue; }
-                    out += (c in tokens) ? tokens[c] : c;
-                }
-
-                return out;
-            },
-
-@if($typeable)
-            @include('wire-forms::partials.date-time-typing')
-
-            {{-- A typed time need not land on a slot. The interval is how the list
-                 *offers* times, not a rule about which ones exist — isSelected()
-                 already tolerates a stored value between two slots — and typing is
-                 the one way to say 08:07 when the list steps by fifteen. Only the
-                 bounds may refuse it. --}}
-            applyTyped(parts) {
-                const hours = parts.hours ?? 0;
-                const minutes = parts.minutes ?? 0;
-                const seconds = this.hasSeconds ? (parts.seconds ?? 0) : 0;
-                if (hours > 23 || minutes > 59 || seconds > 59) return false;
-
-                const time = this.pad(hours) + ':' + this.pad(minutes)
-                    + (this.hasSeconds ? ':' + this.pad(seconds) : '');
-                if (this.isDisabled(time)) return false;
-
-                this.value = time;
-
-                return true;
-            },
-@endif
-
-            get displayValue() {
-                return this.value ? this.format(this.value) : '';
-            },
-
-            clear() {
-                this.value = null;
-            }
-        }"
+            typedFormat: @js($field->getTypedFormat()),
+            typeable: @js($typeable),
+            sheetOnMobile: @js($sheetOnMobile),
+            sheetBreakpoint: @js($sheetBpPx),
+        })"
             class="relative"
     >
         {{-- Input trigger --}}
@@ -226,11 +111,7 @@
                     @if($field->isDisabled() || $field->isReadOnly()) disabled @endif
                     class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 disabled:pointer-events-none transition-colors duration-150"
             >
-                <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                     stroke-width="1.5" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round"
-                          d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
+                {!! icon('outline:clock', 'h-4 w-4') !!}
             </button>
         </div>
 
@@ -308,7 +189,7 @@
                                 'opacity-40 cursor-not-allowed': slot.disabled,
                                 'text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700': ! slot.disabled && ! isSelected(slot.value),
                             }"
-                            class="block w-full text-left px-3 py-1.5 text-sm rounded transition-colors duration-150 tabular-nums"
+                            class="block w-full text-left px-3 py-1.5 text-sm rounded-sm transition-colors duration-150 tabular-nums"
                             x-text="slot.label"
                     ></button>
                 </template>
