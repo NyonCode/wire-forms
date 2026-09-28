@@ -50,26 +50,30 @@
     $t = static fn (string $key, array $replace = []): string
         => (string) trans("wire-forms::fields.editor.{$key}", $replace);
 
+    // Active states read through `$data`, not a bare `isActive(...)`: wire:navigate
+    // can run a toolbar effect Alpine had already queued after the editor's scope
+    // is gone, and a bare name then throws "isActive is not defined" while
+    // `$data.isActive?.(...)` is just undefined.
     $btns = [
-        'bold'         => ['action' => 'toggleBold()',              'active' => "isActive('bold')",           'title' => $t('bold'),                            'icon' => 'forms:bold'],
-        'italic'       => ['action' => 'toggleItalic()',            'active' => "isActive('italic')",         'title' => $t('italic'),                          'icon' => 'forms:italic'],
-        'underline'    => ['action' => 'toggleUnderline()',         'active' => "isActive('underline')",      'title' => $t('underline'),                       'icon' => 'forms:underline'],
-        'strike'       => ['action' => 'toggleStrike()',            'active' => "isActive('strike')",         'title' => $t('strike'),                          'icon' => 'forms:strike'],
-        'code'         => ['action' => 'toggleCode()',              'active' => "isActive('code')",           'title' => $t('code'),                            'icon' => 'forms:code'],
-        'highlight'    => ['action' => 'toggleHighlight()',         'active' => "isActive('highlight')",      'title' => $t('highlight'),                       'icon' => 'forms:highlight'],
-        'h1'           => ['action' => 'setHeading(1)',             'active' => "isActive('heading', { level: 1 })", 'title' => $t('heading', ['level' => 1]),  'label' => 'H1'],
-        'h2'           => ['action' => 'setHeading(2)',             'active' => "isActive('heading', { level: 2 })", 'title' => $t('heading', ['level' => 2]),  'label' => 'H2'],
-        'h3'           => ['action' => 'setHeading(3)',             'active' => "isActive('heading', { level: 3 })", 'title' => $t('heading', ['level' => 3]),  'label' => 'H3'],
-        'bulletList'   => ['action' => 'toggleBulletList()',        'active' => "isActive('bulletList')",     'title' => $t('bullet_list'),                     'icon' => 'forms:bullet-list'],
-        'orderedList'  => ['action' => 'toggleOrderedList()',       'active' => "isActive('orderedList')",    'title' => $t('ordered_list'),                    'icon' => 'forms:ordered-list'],
-        'blockquote'   => ['action' => 'toggleBlockquote()',        'active' => "isActive('blockquote')",     'title' => $t('blockquote'),                      'icon' => 'forms:blockquote'],
-        'codeBlock'    => ['action' => 'toggleCodeBlock()',         'active' => "isActive('codeBlock')",      'title' => $t('code_block'),                      'icon' => 'forms:code-block'],
-        'link'         => ['action' => 'insertLink()',              'active' => "isActive('link')",           'title' => $t('link'),                            'icon' => 'forms:link'],
+        'bold'         => ['action' => 'toggleBold()',              'active' => "\$data.isActive?.('bold')",           'title' => $t('bold'),                            'icon' => 'forms:bold'],
+        'italic'       => ['action' => 'toggleItalic()',            'active' => "\$data.isActive?.('italic')",         'title' => $t('italic'),                          'icon' => 'forms:italic'],
+        'underline'    => ['action' => 'toggleUnderline()',         'active' => "\$data.isActive?.('underline')",      'title' => $t('underline'),                       'icon' => 'forms:underline'],
+        'strike'       => ['action' => 'toggleStrike()',            'active' => "\$data.isActive?.('strike')",         'title' => $t('strike'),                          'icon' => 'forms:strike'],
+        'code'         => ['action' => 'toggleCode()',              'active' => "\$data.isActive?.('code')",           'title' => $t('code'),                            'icon' => 'forms:code'],
+        'highlight'    => ['action' => 'toggleHighlight()',         'active' => "\$data.isActive?.('highlight')",      'title' => $t('highlight'),                       'icon' => 'forms:highlight'],
+        'h1'           => ['action' => 'setHeading(1)',             'active' => "\$data.isActive?.('heading', { level: 1 })", 'title' => $t('heading', ['level' => 1]),  'label' => 'H1'],
+        'h2'           => ['action' => 'setHeading(2)',             'active' => "\$data.isActive?.('heading', { level: 2 })", 'title' => $t('heading', ['level' => 2]),  'label' => 'H2'],
+        'h3'           => ['action' => 'setHeading(3)',             'active' => "\$data.isActive?.('heading', { level: 3 })", 'title' => $t('heading', ['level' => 3]),  'label' => 'H3'],
+        'bulletList'   => ['action' => 'toggleBulletList()',        'active' => "\$data.isActive?.('bulletList')",     'title' => $t('bullet_list'),                     'icon' => 'forms:bullet-list'],
+        'orderedList'  => ['action' => 'toggleOrderedList()',       'active' => "\$data.isActive?.('orderedList')",    'title' => $t('ordered_list'),                    'icon' => 'forms:ordered-list'],
+        'blockquote'   => ['action' => 'toggleBlockquote()',        'active' => "\$data.isActive?.('blockquote')",     'title' => $t('blockquote'),                      'icon' => 'forms:blockquote'],
+        'codeBlock'    => ['action' => 'toggleCodeBlock()',         'active' => "\$data.isActive?.('codeBlock')",      'title' => $t('code_block'),                      'icon' => 'forms:code-block'],
+        'link'         => ['action' => 'insertLink()',              'active' => "\$data.isActive?.('link')",           'title' => $t('link'),                            'icon' => 'forms:link'],
         'image'        => ['action' => 'insertImage()',             'active' => 'false',                      'title' => $t('image'),                           'icon' => 'forms:image'],
-        'table'        => ['action' => 'insertTable()',             'active' => "isActive('table')",          'title' => $t('table'),                           'icon' => 'forms:table'],
-        'alignLeft'    => ['action' => "setAlign('left')",          'active' => "isActive({ textAlign: 'left' })",   'title' => $t('align_left'),               'icon' => 'forms:align-left'],
-        'alignCenter'  => ['action' => "setAlign('center')",        'active' => "isActive({ textAlign: 'center' })", 'title' => $t('align_center'),             'icon' => 'forms:align-center'],
-        'alignRight'   => ['action' => "setAlign('right')",         'active' => "isActive({ textAlign: 'right' })",  'title' => $t('align_right'),              'icon' => 'forms:align-right'],
+        'table'        => ['action' => 'insertTable()',             'active' => "\$data.isActive?.('table')",          'title' => $t('table'),                           'icon' => 'forms:table'],
+        'alignLeft'    => ['action' => "setAlign('left')",          'active' => "\$data.isActive?.({ textAlign: 'left' })",   'title' => $t('align_left'),               'icon' => 'forms:align-left'],
+        'alignCenter'  => ['action' => "setAlign('center')",        'active' => "\$data.isActive?.({ textAlign: 'center' })", 'title' => $t('align_center'),             'icon' => 'forms:align-center'],
+        'alignRight'   => ['action' => "setAlign('right')",         'active' => "\$data.isActive?.({ textAlign: 'right' })",  'title' => $t('align_right'),              'icon' => 'forms:align-right'],
         'undo'         => ['action' => 'undo()',                    'active' => 'false',                      'title' => $t('undo'),                            'icon' => 'forms:undo'],
         'redo'         => ['action' => 'redo()',                    'active' => 'false',                      'title' => $t('redo'),                            'icon' => 'forms:redo'],
     ];
@@ -109,7 +113,11 @@
     .tiptap-content .ProseMirror td, .tiptap-content .ProseMirror th { border: 1px solid #d1d5db; padding: .375rem .5rem; vertical-align: top; min-width: 1.5rem; }
     .tiptap-content .ProseMirror th { background: #f9fafb; font-weight: 600; }
     .tiptap-content .ProseMirror .selectedCell { background: #eff6ff; }
-    .dark .tiptap-content .ProseMirror code { background: #374151; color: #f87171; }
+    .dark .tiptap-content .ProseMirror code { background: #374151; color: #fca5a5; }
+    .dark .tiptap-content .ProseMirror pre code { background: none; color: inherit; }
+    .dark .tiptap-content .ProseMirror blockquote { border-left-color: #4b5563; color: #9ca3af; }
+    .dark .tiptap-content .ProseMirror a { color: #60a5fa; }
+    .dark .tiptap-content .ProseMirror mark { color: #111827; }
     .dark .tiptap-content .ProseMirror td, .dark .tiptap-content .ProseMirror th { border-color: #4b5563; }
     .dark .tiptap-content .ProseMirror th { background: #374151; }
     .dark .tiptap-content .ProseMirror .selectedCell { background: #1e3a5f; }
@@ -222,8 +230,8 @@
 
     {{-- ─── Character count footer ──────────────────────────────────── --}}
     @if($field->getMaxLength())
-        <div class="flex justify-end px-3 py-1 bg-gray-50 dark:bg-gray-700/30 border-t border-gray-300 dark:border-gray-600 text-xs text-gray-400 dark:text-gray-500">
-            <span x-text="characterCount + ' / {{ $field->getMaxLength() }}'"></span>
+        <div class="flex justify-end px-3 py-1 bg-gray-50 dark:bg-gray-700/30 border-t border-gray-300 dark:border-gray-600 text-xs text-gray-500 dark:text-gray-400">
+            <span x-text="($data.characterCount ?? 0) + ' / {{ $field->getMaxLength() }}'"></span>
         </div>
     @endif
 </div>
